@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python="${PYTHON:-python3}"
+venv="$root/.venv"
+
+if [[ ! -x "$venv/bin/python" ]]; then
+  "$python" -m venv "$venv"
+fi
+
+shopt -s nullglob
+wheels=("$root"/api/*.whl)
+if [[ ${#wheels[@]} -ne 1 ]]; then
+  echo "Expected exactly one MAFIA wheel under $root/api." >&2
+  exit 1
+fi
+
+"$venv/bin/python" -m pip install \
+  --disable-pip-version-check \
+  --requirement "$root/api/requirements.txt"
+"$venv/bin/python" -m pip install \
+  --disable-pip-version-check \
+  --no-deps \
+  "${wheels[0]}"
+
+echo "Installed MAFIA into $venv"

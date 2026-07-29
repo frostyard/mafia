@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python="$root/.venv/bin/python"
+
+if [[ ! -x "$python" ]]; then
+  echo "Run $root/bin/install before starting MAFIA." >&2
+  exit 1
+fi
+
+cd "$root"
+"$python" -c "from mafia.config import get_settings; get_settings().ensure_directories()"
+"$python" -m alembic -c alembic.ini upgrade head
+exec "$python" -m mafia.cli
