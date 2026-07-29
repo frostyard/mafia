@@ -12,6 +12,7 @@ from mafia.domain.enums import (
     RunState,
     WorkflowType,
 )
+from mafia.services.operator import current_actor
 from sqlalchemy import (
     JSON,
     DateTime,
@@ -169,7 +170,7 @@ class Decision(Base):
         )
     )
     feedback: Mapped[str | None] = mapped_column(Text)
-    actor: Mapped[str] = mapped_column(String(50), default="local-user")
+    actor: Mapped[str] = mapped_column(String(100), default=current_actor)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -242,6 +243,7 @@ class AuditEvent(Base):
     from_state: Mapped[str | None] = mapped_column(String(40))
     to_state: Mapped[str | None] = mapped_column(String(40))
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    actor: Mapped[str] = mapped_column(String(100), default=current_actor)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

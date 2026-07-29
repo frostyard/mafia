@@ -23,6 +23,7 @@ from mafia.services.activity import (
     reset_to_specification,
 )
 from mafia.services.lifecycle import reconcile_run
+from mafia.services.operator import bind_request_operator
 from mafia.services.prerequisites import readiness
 from mafia.services.repositories import InvalidRepositoryError
 from mafia.services.runs import (
@@ -38,6 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter()
 Session = Annotated[AsyncSession, Depends(get_session)]
+Operator = Annotated[None, Depends(bind_request_operator)]
 
 
 @router.get("/healthz", status_code=status.HTTP_204_NO_CONTENT)
@@ -72,7 +74,7 @@ async def runs_index(session: Session) -> list[RunRead]:
 
 
 @router.post("/api/runs", response_model=RunRead, status_code=status.HTTP_201_CREATED)
-async def runs_create(request: RunCreate, session: Session) -> RunRead:
+async def runs_create(request: RunCreate, session: Session, _: Operator) -> RunRead:
     try:
         run = await create_run(session, request)
     except (InvalidRepositoryError, UnsupportedModelError) as error:
@@ -139,7 +141,7 @@ async def runs_activity(run_id: str) -> RunActivity:
 
 
 @router.post("/api/runs/{run_id}/cancel", response_model=RunActivity)
-async def runs_cancel(run_id: str) -> RunActivity:
+async def runs_cancel(run_id: str, _: Operator) -> RunActivity:
     try:
         return await cancel_run(run_id)
     except RunNotFoundError as error:
@@ -155,7 +157,7 @@ async def runs_cancel(run_id: str) -> RunActivity:
 
 
 @router.post("/api/runs/{run_id}/retry", response_model=RunActivity)
-async def runs_retry(run_id: str) -> RunActivity:
+async def runs_retry(run_id: str, _: Operator) -> RunActivity:
     try:
         return await prepare_retry(run_id)
     except RunNotFoundError as error:
@@ -171,7 +173,7 @@ async def runs_retry(run_id: str) -> RunActivity:
 
 
 @router.post("/api/runs/{run_id}/reset-to-specification", response_model=RunRead)
-async def runs_reset_to_specification(run_id: str) -> RunRead:
+async def runs_reset_to_specification(run_id: str, _: Operator) -> RunRead:
     try:
         run = await reset_to_specification(run_id)
     except RunNotFoundError as error:
@@ -188,7 +190,7 @@ async def runs_reset_to_specification(run_id: str) -> RunRead:
 
 
 @router.post("/api/runs/{run_id}/refresh")
-async def runs_refresh(run_id: str) -> dict[str, object]:
+async def runs_refresh(run_id: str, _: Operator) -> dict[str, object]:
     try:
         return await reconcile_run(run_id)
     except RunNotFoundError as error:

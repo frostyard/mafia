@@ -37,6 +37,8 @@ Open `http://127.0.0.1:3000`, create a run, and start the workflow.
 - [GitHub authentication](docs/authentication.md) — OAuth App setup, user or organization authorization,
   secure sessions, and Caddy integration.
 - [Personal Incus deployment](docs/incus.md) — persistent VM profile, private tailnet ingress, and updates.
+- [Frostyard organization deployment](docs/frostyard-incus.md) — hard owner isolation, GitHub App credentials,
+  operator attribution, and dedicated Copilot access.
 
 ## License
 

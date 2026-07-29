@@ -93,14 +93,33 @@ async def run_command(
     env: Mapping[str, str] | None = None,
     timeout_seconds: float | None = None,
     check: bool = True,
+    github_credentials: bool = False,
 ) -> CommandResult:
     if not argv or any("\x00" in argument for argument in argv):
         raise ValueError("argv must contain valid arguments")
     settings = get_settings()
+    environment = host_environment(env)
+    command_name = Path(argv[0]).name
+    if settings.github_app_enabled and (
+        command_name == "gh" or (command_name == "git" and github_credentials)
+    ):
+        from mafia.services.github_app import github_app_token
+
+        config_index = int(environment.get("GIT_CONFIG_COUNT", "0"))
+        environment.update(
+            {
+                "GH_TOKEN": await github_app_token(),
+                "GIT_CONFIG_COUNT": str(config_index + 2),
+                f"GIT_CONFIG_KEY_{config_index}": "credential.https://github.com.helper",
+                f"GIT_CONFIG_VALUE_{config_index}": "!gh auth git-credential",
+                f"GIT_CONFIG_KEY_{config_index + 1}": "core.hooksPath",
+                f"GIT_CONFIG_VALUE_{config_index + 1}": "/dev/null",
+            }
+        )
     process = await asyncio.create_subprocess_exec(
         *argv,
         cwd=cwd,
-        env=host_environment(env),
+        env=environment,
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,

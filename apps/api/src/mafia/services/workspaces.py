@@ -6,13 +6,48 @@ from pathlib import Path
 from mafia.config import Settings, get_settings
 from mafia.services.commands import run_command
 from mafia.services.github import RepositoryMetadata, get_repository_metadata
-from mafia.services.repositories import RepositoryIdentity
+from mafia.services.repositories import (
+    RepositoryIdentity,
+    parse_repository,
+    require_repository_owner,
+)
 
 _locks: dict[str, asyncio.Lock] = {}
 
 
 class WorkspaceError(RuntimeError):
     pass
+
+
+async def reset_and_verify_origin(
+    worktree: Path,
+    identity: RepositoryIdentity,
+    remote_url: str,
+) -> None:
+    require_repository_owner(identity)
+    await run_command(
+        (
+            "git",
+            "-C",
+            str(worktree),
+            "remote",
+            "set-url",
+            "origin",
+            remote_url,
+        )
+    )
+    configured_url = (
+        await run_command(
+            ("git", "-C", str(worktree), "remote", "get-url", "origin")
+        )
+    ).stdout.strip()
+    if (
+        parse_repository(configured_url).slug.casefold()
+        != identity.slug.casefold()
+    ):
+        raise WorkspaceError(
+            "The worktree origin does not match the authorized repository"
+        )
 
 
 def _lock(identity: RepositoryIdentity) -> asyncio.Lock:
@@ -24,19 +59,25 @@ class WorkspaceService:
         self.settings = settings or get_settings()
 
     def cache_path(self, identity: RepositoryIdentity) -> Path:
+        require_repository_owner(identity, self.settings)
         return self.settings.repositories_dir / identity.owner / f"{identity.name}.git"
 
     def worktree_path(self, identity: RepositoryIdentity, label: str) -> Path:
+        require_repository_owner(identity, self.settings)
         digest = hashlib.sha256(f"{identity.slug}:{label}".encode()).hexdigest()[:12]
         return self.settings.worktrees_dir / identity.owner / identity.name / digest
 
     async def refresh(self, identity: RepositoryIdentity) -> tuple[RepositoryMetadata, Path, str]:
+        require_repository_owner(identity, self.settings)
         async with _lock(identity):
             metadata = await get_repository_metadata(identity)
             cache = self.cache_path(identity)
             cache.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             if not cache.exists():
-                await run_command(("git", "clone", "--bare", metadata.clone_url, str(cache)))
+                await run_command(
+                    ("git", "clone", "--bare", metadata.clone_url, str(cache)),
+                    github_credentials=True,
+                )
             else:
                 await run_command(
                     ("git", "--git-dir", str(cache), "remote", "set-url", "origin", metadata.clone_url)
@@ -50,7 +91,8 @@ class WorkspaceService:
                     "--prune",
                     "origin",
                     f"+refs/heads/{metadata.default_branch}:refs/remotes/origin/{metadata.default_branch}",
-                )
+                ),
+                github_credentials=True,
             )
             result = await run_command(
                 (
@@ -72,13 +114,15 @@ class WorkspaceService:
         expected_base_sha: str,
         expected_head_sha: str,
     ) -> tuple[RepositoryMetadata, Path, str, str]:
+        require_repository_owner(identity, self.settings)
         async with _lock(identity):
             metadata = await get_repository_metadata(identity)
             cache = self.cache_path(identity)
             cache.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             if not cache.exists():
                 await run_command(
-                    ("git", "clone", "--bare", metadata.clone_url, str(cache))
+                    ("git", "clone", "--bare", metadata.clone_url, str(cache)),
+                    github_credentials=True,
                 )
             else:
                 await run_command(
@@ -102,7 +146,8 @@ class WorkspaceService:
                     "origin",
                     f"+refs/heads/{base_ref}:refs/remotes/origin/{base_ref}",
                     f"+refs/pull/{number}/head:refs/remotes/pull/{number}/head",
-                )
+                ),
+                github_credentials=True,
             )
             base = (
                 await run_command(
@@ -139,6 +184,7 @@ class WorkspaceService:
         sha: str,
         label: str,
     ) -> Path:
+        require_repository_owner(identity, self.settings)
         path = self.worktree_path(identity, label)
         async with _lock(identity):
             if path.exists():
@@ -157,6 +203,7 @@ class WorkspaceService:
         base_sha: str,
         branch_name: str,
     ) -> Path:
+        require_repository_owner(identity, self.settings)
         path = self.worktree_path(identity, branch_name)
         async with _lock(identity):
             if path.exists():

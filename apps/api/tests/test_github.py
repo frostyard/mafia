@@ -2,8 +2,10 @@ from typing import Any
 
 import pytest
 from mafia.services.github import (
+    GitHubDataError,
     get_issue,
     get_pull_request_context,
+    get_repository_metadata,
     linked_issue_numbers,
     post_pull_request_comment,
 )
@@ -21,6 +23,22 @@ def test_linked_issues_stay_in_repository() -> None:
         ],
     )
     assert numbers == {12, 13, 14}
+
+
+@pytest.mark.asyncio
+async def test_repository_metadata_rejects_mismatched_clone_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_gh_json(*_: str) -> dict[str, Any]:
+        return {
+        "default_branch": "main",
+        "clone_url": "https://github.com/attacker/other.git",
+        }
+
+    monkeypatch.setattr("mafia.services.github.gh_json", fake_gh_json)
+
+    with pytest.raises(GitHubDataError, match="does not match"):
+        await get_repository_metadata(RepositoryIdentity("octo", "repo"))
 
 
 @pytest.mark.asyncio

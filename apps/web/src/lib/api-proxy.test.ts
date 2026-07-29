@@ -5,7 +5,34 @@ describe("proxyApiRequest", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     delete process.env.MAFIA_API_URL;
+    delete process.env.MAFIA_AUTH_MODE;
     delete process.env.MAFIA_INTERNAL_SECRET;
+  });
+
+  it("forwards only proxy-authenticated operator identity", async () => {
+    process.env.MAFIA_AUTH_MODE = "github";
+    process.env.MAFIA_INTERNAL_SECRET = "trusted-internal-secret";
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(null, { status: 204 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await proxyApiRequest(
+      new Request("http://127.0.0.1:3000/api/runs", {
+        headers: {
+          "x-mafia-github-user-id": "42",
+          "x-mafia-github-login": "octocat",
+          "x-mafia-operator-id": "666",
+          "x-mafia-operator-login": "attacker",
+        },
+      }),
+      "/api/runs",
+    );
+
+    const headers = new Headers(fetchMock.mock.calls[0]![1]?.headers);
+    expect(headers.get("x-mafia-operator-id")).toBe("42");
+    expect(headers.get("x-mafia-operator-login")).toBe("octocat");
   });
 
   it("uses the runtime API URL and preserves request details", async () => {

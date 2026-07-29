@@ -11,9 +11,12 @@ from mafia.db.session import SessionFactory
 from mafia.domain.enums import PhaseState, RunState
 from mafia.services.commands import CommandError, run_command
 from mafia.services.github import get_pr, gh_json
-from mafia.services.repositories import RepositoryIdentity
+from mafia.services.repositories import (
+    RepositoryIdentity,
+    require_repository_owner,
+)
 from mafia.services.runs import get_run, transition_run
-from mafia.services.workspaces import WorkspaceService
+from mafia.services.workspaces import WorkspaceService, reset_and_verify_origin
 from sqlalchemy import delete, select
 
 
@@ -29,6 +32,7 @@ async def pull_request_for_branch(
     identity: RepositoryIdentity,
     branch: str,
 ) -> dict[str, Any] | None:
+    require_repository_owner(identity)
     result = await gh_json(
         "pr",
         "list",
@@ -64,6 +68,7 @@ async def _create_recovery_pr(
     default_branch: str,
     commit: str,
 ) -> str:
+    require_repository_owner(identity)
     body = (
         "## Summary\n\n"
         f"Recovered phase {phase.ordinal} after the local process stopped.\n\n"
@@ -95,10 +100,12 @@ async def _branch_commit(
     phase: Phase,
     cache_path: str | None,
 ) -> str | None:
+    require_repository_owner(identity)
     if phase.branch_name is None:
         return None
     remote = await run_command(
-        ("git", "ls-remote", "--heads", identity.remote_url, phase.branch_name)
+        ("git", "ls-remote", "--heads", identity.remote_url, phase.branch_name),
+        github_credentials=True,
     )
     remote_line = remote.stdout.strip()
     if remote_line:
@@ -120,9 +127,15 @@ async def _branch_commit(
     commit = local.stdout.strip()
     if not commit or commit == phase.source_sha or phase.worktree_path is None:
         return None
+    await reset_and_verify_origin(
+        Path(phase.worktree_path),
+        identity,
+        identity.remote_url,
+    )
     await run_command(
         ("git", "push", "--set-upstream", "origin", phase.branch_name),
         cwd=Path(phase.worktree_path),
+        github_credentials=True,
     )
     return commit
 
@@ -192,6 +205,7 @@ async def recover_phase_pull_request(run_id: str, phase_id: str) -> bool:
         if phase is None or phase.run_id != run.id or phase.branch_name is None:
             return False
         identity = RepositoryIdentity(run.repository.owner, run.repository.name)
+        require_repository_owner(identity)
         cache_path = run.repository.cache_path
     pr = await pull_request_for_branch(identity, phase.branch_name)
     if pr is None:
@@ -291,6 +305,7 @@ async def recover_interrupted_runs() -> None:
                     )
                 )
                 identity = RepositoryIdentity(run.repository.owner, run.repository.name)
+                require_repository_owner(identity)
                 cache_path = run.repository.cache_path
                 default_branch = run.repository.default_branch
             if phase is None or phase.branch_name is None:
@@ -361,6 +376,7 @@ async def _reconcile_run(run_id: str) -> dict[str, Any]:
         if phase is None or phase.pr_number is None:
             raise ReconciliationError("Waiting run has no active pull request")
         identity = RepositoryIdentity(run.repository.owner, run.repository.name)
+        require_repository_owner(identity)
         pr = await get_pr(identity, phase.pr_number)
         if not bool(pr.get("merged")):
             return {

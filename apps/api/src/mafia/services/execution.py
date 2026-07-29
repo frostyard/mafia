@@ -23,10 +23,14 @@ from mafia.services.github import gh_json
 from mafia.services.lifecycle import pull_request_for_branch
 from mafia.services.locks import acquire_repository_lock, release_repository_lock
 from mafia.services.operations import active_run_work, tracked_operation
-from mafia.services.repositories import RepositoryIdentity
+from mafia.services.operator import current_actor
+from mafia.services.repositories import (
+    RepositoryIdentity,
+    require_repository_owner,
+)
 from mafia.services.runs import get_run, transition_run
 from mafia.services.sandbox import ExecutionEnvironment
-from mafia.services.workspaces import WorkspaceService
+from mafia.services.workspaces import WorkspaceService, reset_and_verify_origin
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
@@ -79,6 +83,9 @@ async def _phase_with_run(run_id: str, phase_id: str) -> tuple[Run, Phase]:
         phase = await session.get(Phase, phase_id)
         if run is None or phase is None or phase.run_id != run_id:
             raise LookupError(phase_id)
+        require_repository_owner(
+            RepositoryIdentity(run.repository.owner, run.repository.name)
+        )
         return run, phase
 
 
@@ -131,6 +138,7 @@ async def _execute_phase(
 
     workspaces = WorkspaceService()
     identity = RepositoryIdentity(run.repository.owner, run.repository.name)
+    require_repository_owner(identity)
     async with tracked_operation(
         run_id=run.id,
         phase_id=phase.id,
@@ -341,6 +349,10 @@ async def _execute_phase(
                     "git",
                     "-C",
                     str(worktree),
+                    "-c",
+                    f"user.name={settings.repository_action_name}",
+                    "-c",
+                    f"user.email={settings.repository_action_email}",
                     "commit",
                     "-m",
                     f"feat: {phase.title}",
@@ -359,13 +371,20 @@ async def _execute_phase(
             operation_key=phase.id,
             detail={"branch": branch, "commit_sha": commit},
         ) as operation:
+            await reset_and_verify_origin(
+                worktree,
+                identity,
+                metadata.clone_url,
+            )
             await run_command(
-                ("git", "-C", str(worktree), "push", "--set-upstream", "origin", branch)
+                ("git", "-C", str(worktree), "push", "--set-upstream", "origin", branch),
+                github_credentials=True,
             )
             operation.set_result({"branch": branch, "commit_sha": commit})
         body = (
             f"## Summary\n\n{report.summary}\n\n"
             f"## Source\n\nPlanned from `{current_sha}`.\n\n"
+            f"## Operator\n\n`{current_actor()}`\n\n"
             "## Validation\n\n" + "\n".join(f"- `{command}`" for command in report.validation_commands)
         )
         async with tracked_operation(

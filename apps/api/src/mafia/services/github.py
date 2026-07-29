@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 from mafia.services.commands import run_command
-from mafia.services.repositories import RepositoryIdentity
+from mafia.services.repositories import (
+    RepositoryIdentity,
+    parse_repository,
+    require_repository_owner,
+)
 
 LINK_PATTERN = re.compile(
     r"https://github\.com/(?P<url_owner>[A-Za-z0-9_.-]+)/(?P<url_repo>[A-Za-z0-9_.-]+)"
@@ -46,6 +50,7 @@ async def gh_json(*args: str) -> dict[str, Any] | list[Any]:
 
 
 async def get_repository_metadata(identity: RepositoryIdentity) -> RepositoryMetadata:
+    require_repository_owner(identity)
     data = await gh_json(
         "api",
         f"repos/{identity.slug}",
@@ -56,13 +61,27 @@ async def get_repository_metadata(identity: RepositoryIdentity) -> RepositoryMet
     clone_url = data.get("clone_url") if isinstance(data, dict) else None
     if not isinstance(default_branch, str):
         raise GitHubDataError(f"Repository metadata is incomplete for {identity.slug}")
+    resolved_clone_url = (
+        clone_url if isinstance(clone_url, str) else identity.remote_url
+    )
+    try:
+        clone_identity = parse_repository(resolved_clone_url)
+    except ValueError as error:
+        raise GitHubDataError(
+            f"Repository clone URL is invalid for {identity.slug}"
+        ) from error
+    if clone_identity.slug.casefold() != identity.slug.casefold():
+        raise GitHubDataError(
+            f"Repository clone URL does not match {identity.slug}"
+        )
     return RepositoryMetadata(
         default_branch=default_branch,
-        clone_url=clone_url if isinstance(clone_url, str) else identity.remote_url,
+        clone_url=resolved_clone_url,
     )
 
 
 async def get_issue(identity: RepositoryIdentity, number: int) -> dict[str, Any]:
+    require_repository_owner(identity)
     issue = await gh_json(
         "api",
         f"repos/{identity.slug}/issues/{number}",
@@ -143,6 +162,7 @@ def linked_issue_numbers(
 
 
 async def get_pr(identity: RepositoryIdentity, number: int) -> dict[str, Any]:
+    require_repository_owner(identity)
     data = await gh_json(
         "api",
         f"repos/{identity.slug}/pulls/{number}",
@@ -158,6 +178,7 @@ async def get_pull_request_context(
     identity: RepositoryIdentity,
     number: int,
 ) -> dict[str, Any]:
+    require_repository_owner(identity)
     pull_request = await gh_json(
         "api",
         f"repos/{identity.slug}/pulls/{number}",
@@ -216,6 +237,7 @@ async def post_pull_request_comment(
     artifact_id: str,
     markdown: str,
 ) -> str:
+    require_repository_owner(identity)
     marker = f"<!-- mafia-review:{run_id}:{artifact_id} -->"
     comments_response = await gh_json(
         "api",

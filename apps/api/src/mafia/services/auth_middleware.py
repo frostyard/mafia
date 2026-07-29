@@ -8,6 +8,7 @@ from mafia.services.auth import (
     AuthenticationError,
     SignedCookieCodec,
 )
+from mafia.services.operator import OperatorIdentity
 from starlette.datastructures import Headers
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -52,6 +53,9 @@ class AuthenticationMiddleware:
             return
         if self._valid_internal_secret(headers.get("x-mafia-internal-secret")):
             scope.setdefault("state", {})["auth_internal"] = True
+            operator = self._forwarded_operator(headers)
+            if operator is not None:
+                scope.setdefault("state", {})["auth_operator"] = operator
             await self.app(scope, receive, send)
             return
         if scope["type"] == "websocket":
@@ -88,3 +92,22 @@ class AuthenticationMiddleware:
             and configured is not None
             and secrets.compare_digest(value, configured.get_secret_value())
         )
+
+    @staticmethod
+    def _forwarded_operator(headers: Headers) -> OperatorIdentity | None:
+        user_id = headers.get("x-mafia-operator-id")
+        login = headers.get("x-mafia-operator-login")
+        if user_id is None or login is None:
+            return None
+        try:
+            parsed_user_id = int(user_id)
+        except ValueError:
+            return None
+        if (
+            parsed_user_id <= 0
+            or len(login) > 39
+            or not login
+            or not all(character.isalnum() or character == "-" for character in login)
+        ):
+            return None
+        return OperatorIdentity(github_user_id=parsed_user_id, login=login)

@@ -11,6 +11,7 @@ from typing import Any
 from mafia.config import get_settings
 from mafia.db.models import AuditEvent, Operation
 from mafia.db.session import SessionFactory
+from mafia.services.operator import current_actor
 from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
@@ -160,6 +161,7 @@ async def _start_operation(
     detail: dict[str, Any],
     detail_provider: OperationDetailProvider | None,
 ) -> OperationHandle:
+    detail = {**detail, "operator": current_actor()}
     request_hash = _request_hash(detail)
     idempotency_key = f"{run_id}:{phase_id or '-'}:{operation_type}:{operation_key}"
     now = _now()

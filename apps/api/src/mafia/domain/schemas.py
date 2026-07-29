@@ -145,6 +145,7 @@ class ActivityEventRead(BaseModel):
     from_state: str | None
     to_state: str | None
     payload: dict[str, Any]
+    actor: str
     created_at: datetime
 
     model_config = {"from_attributes": True}

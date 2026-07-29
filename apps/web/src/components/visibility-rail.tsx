@@ -407,7 +407,7 @@ export function VisibilityRail({
             {activity.events.slice(0, 16).map((event) => (
               <li key={event.id}>
                 <time dateTime={event.created_at}>{timeLabel(event.created_at)}</time>
-                <span>{eventLabel(event.event_type)}</span>
+                <span>{eventLabel(event.event_type)} · {event.actor}</span>
               </li>
             ))}
           </ol>

@@ -18,6 +18,7 @@ mafia reads `.env` through the `MAFIA_` prefix. Start from `.env.example`.
 | `MAFIA_WEB_PORT` | `3000` | Next.js port in the release bundle |
 | `MAFIA_API_URL` | `http://127.0.0.1:8000` | FastAPI URL used by Next.js |
 | `MAFIA_MODEL_PAIRS` | reciprocal Opus and GPT pair | Primary-to-reviewer model mapping |
+| `MAFIA_REPOSITORY_OWNER` | unset | Restrict every repository operation to one GitHub owner |
 
 ## Execution settings
 
@@ -41,3 +42,20 @@ At least one of these authorization policies is mandatory:
 - `MAFIA_GITHUB_ALLOWED_ORG`
 
 Read [GitHub authentication](/operations/authentication/) before exposing the web listener.
+
+## GitHub App repository identity
+
+Organization deployments can separate repository actions from the licensed
+Copilot user:
+
+| Variable | Purpose |
+| --- | --- |
+| `MAFIA_GITHUB_APP_ID` | GitHub App identifier |
+| `MAFIA_GITHUB_APP_INSTALLATION_ID` | Selected-repository installation identifier |
+| `MAFIA_GITHUB_APP_PRIVATE_KEY_PATH` | Path to the App's PEM private key |
+| `MAFIA_REPOSITORY_ACTION_NAME` | Git commit author name |
+| `MAFIA_REPOSITORY_ACTION_EMAIL` | Git commit author email |
+
+Configure all three App credential values together. MAFIA mints short-lived
+installation tokens for host `git` and `gh` commands without storing tokens
+in SQLite. See [Frostyard organization deployment](/operations/frostyard-incus/).

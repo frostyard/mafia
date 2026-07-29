@@ -2,6 +2,7 @@ import asyncio
 import shutil
 from dataclasses import dataclass
 
+import httpx
 from mafia.config import get_settings
 from mafia.domain.schemas import Capability, Readiness
 from mafia.services.commands import (
@@ -15,6 +16,10 @@ from mafia.services.devcontainers import (
     resolve_devcontainer_cli,
     select_container_engine,
 )
+from mafia.services.github_app import (
+    GitHubAppAuthenticationError,
+    github_app_token,
+)
 
 
 @dataclass(frozen=True)
@@ -26,7 +31,6 @@ class Probe:
 
 PROBES = (
     Probe("git", "git", ("--version",)),
-    Probe("github", "gh", ("auth", "status")),
     Probe("copilot", "copilot", ("--version",)),
     Probe("bubblewrap", "bwrap", ("--version",)),
     Probe("process-limits", "prlimit", ("--version",)),
@@ -56,10 +60,32 @@ async def _probe(probe: Probe) -> Capability:
 
 async def readiness() -> Readiness:
     settings = get_settings()
-    required_probes = PROBES if settings.execution_mode == "isolated" else PROBES[:3]
+    required_probes = PROBES if settings.execution_mode == "isolated" else PROBES[:2]
     capabilities = list(
         await asyncio.gather(*(_probe(probe) for probe in required_probes))
     )
+    if shutil.which("gh") is None:
+        capabilities.append(
+            Capability(name="github", available=False, detail="gh not found")
+        )
+    elif settings.github_app_enabled:
+        try:
+            await github_app_token()
+            capabilities.append(
+                Capability(
+                    name="github",
+                    available=True,
+                    detail="GitHub App installation authentication available",
+                )
+            )
+        except (GitHubAppAuthenticationError, httpx.HTTPError) as error:
+            capabilities.append(
+                Capability(name="github", available=False, detail=str(error)[:300])
+            )
+    else:
+        capabilities.append(
+            await _probe(Probe("github", "gh", ("auth", "status")))
+        )
     required_count = len(capabilities)
     if settings.execution_mode == "host":
         capabilities.append(

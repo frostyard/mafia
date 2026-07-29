@@ -123,6 +123,7 @@ export interface ActivityEvent {
   from_state: string | null;
   to_state: string | null;
   payload: Record<string, unknown>;
+  actor: string;
   created_at: string;
 }
 

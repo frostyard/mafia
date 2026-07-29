@@ -58,6 +58,8 @@ cp packaging/launch.cjs "$staging/$release_name/web/launch.cjs"
 cp alembic.ini .env.example LICENSE "$staging/$release_name/"
 cp docs/deployment.md "$staging/$release_name/README.md"
 cp docs/authentication.md "$staging/$release_name/docs/authentication.md"
+cp docs/incus.md "$staging/$release_name/docs/incus.md"
+cp docs/frostyard-incus.md "$staging/$release_name/docs/frostyard-incus.md"
 printf '%s\n' "$version" >"$staging/$release_name/VERSION"
 chmod +x "$staging/$release_name"/bin/* "$staging/$release_name/start.sh"
 

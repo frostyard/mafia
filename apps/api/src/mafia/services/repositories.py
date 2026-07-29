@@ -2,6 +2,7 @@ import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+from mafia.config import Settings, get_settings
 from mafia.db.models import Repository
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +28,21 @@ class RepositoryIdentity:
         return f"https://github.com/{self.slug}.git"
 
 
+def require_repository_owner(
+    identity: RepositoryIdentity,
+    settings: Settings | None = None,
+) -> RepositoryIdentity:
+    required_owner = (settings or get_settings()).repository_owner
+    if (
+        required_owner is not None
+        and identity.owner.casefold() != required_owner.casefold()
+    ):
+        raise InvalidRepositoryError(
+            f"Repository owner must be {required_owner!r}, got {identity.owner!r}"
+        )
+    return identity
+
+
 def parse_repository(value: str) -> RepositoryIdentity:
     normalized = value.strip()
     if "://" in normalized:
@@ -41,10 +57,13 @@ def parse_repository(value: str) -> RepositoryIdentity:
     parts = normalized.split("/")
     if len(parts) != 2 or not all(SLUG_PATTERN.fullmatch(part) for part in parts):
         raise InvalidRepositoryError("Repository must be owner/name or a GitHub repository URL")
-    return RepositoryIdentity(owner=parts[0], name=parts[1])
+    return require_repository_owner(
+        RepositoryIdentity(owner=parts[0], name=parts[1])
+    )
 
 
 async def get_or_create_repository(session: AsyncSession, identity: RepositoryIdentity) -> Repository:
+    require_repository_owner(identity)
     repository = await session.scalar(
         select(Repository).where(Repository.owner == identity.owner, Repository.name == identity.name)
     )

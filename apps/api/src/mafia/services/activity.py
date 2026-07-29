@@ -21,6 +21,7 @@ from mafia.domain.enums import ArtifactKind, DecisionType, PhaseState, RunState
 from mafia.domain.schemas import ActivityEventRead, OperationRead, RunActivity
 from mafia.domain.state_machine import require_transition
 from mafia.services.operations import cancel_active_work, has_active_work
+from mafia.services.repositories import RepositoryIdentity, require_repository_owner
 from mafia.services.runs import ConcurrentUpdateError, get_run, transition_run
 from sqlalchemy import delete, func, select, update
 
@@ -252,6 +253,9 @@ async def _close_running_operations(run_id: str, reason: str) -> None:
 async def cancel_run(run_id: str) -> RunActivity:
     async with SessionFactory() as session:
         run = await get_run(session, run_id)
+        require_repository_owner(
+            RepositoryIdentity(run.repository.owner, run.repository.name)
+        )
         if run.state not in WORKING_STATES:
             raise RunControlError("Only active work can be cancelled from the activity rail")
         await transition_run(
@@ -268,6 +272,14 @@ async def cancel_run(run_id: str) -> RunActivity:
 
 
 async def prepare_retry(run_id: str) -> RunActivity:
+    async with SessionFactory() as session:
+        retry_run = await get_run(session, run_id)
+        require_repository_owner(
+            RepositoryIdentity(
+                retry_run.repository.owner,
+                retry_run.repository.name,
+            )
+        )
     activity = await get_run_activity(run_id)
     if activity.state != RunState.FAILED and not activity.stalled:
         raise RunControlError("Only failed or stalled work can be retried")
@@ -305,6 +317,9 @@ async def prepare_retry(run_id: str) -> RunActivity:
 async def reset_to_specification(run_id: str) -> Run:
     async with SessionFactory() as session:
         run = await get_run(session, run_id)
+        require_repository_owner(
+            RepositoryIdentity(run.repository.owner, run.repository.name)
+        )
         if run.active_spec_revision is None:
             raise RunControlError(
                 "The run cannot return to specification refinement before a specification exists"

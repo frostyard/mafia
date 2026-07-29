@@ -2,7 +2,7 @@ import time
 
 import httpx
 import pytest
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from mafia.api import auth as auth_routes
 from mafia.config import Settings
 from mafia.services.auth import (
@@ -14,6 +14,7 @@ from mafia.services.auth import (
     SignedCookieCodec,
 )
 from mafia.services.auth_middleware import AuthenticationMiddleware
+from mafia.services.operator import bind_request_operator, current_actor
 from pydantic import ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
@@ -248,3 +249,43 @@ async def test_authentication_middleware_accepts_session_or_internal_secret() ->
             headers={"X-Mafia-Internal-Secret": "i" * 32},
         )
         assert internal_response.json() == {"login": "internal"}
+
+
+@pytest.mark.asyncio
+async def test_internal_operator_headers_require_secret_and_bind_actor() -> None:
+    settings = auth_settings()
+    app = FastAPI()
+    app.add_middleware(AuthenticationMiddleware, settings=settings)
+
+    async def actor() -> dict[str, str]:
+        return {"actor": current_actor()}
+
+    app.add_api_route(
+        "/actor",
+        actor,
+        dependencies=[Depends(bind_request_operator)],
+        methods=["GET"],
+    )
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="https://mafia.example",
+    ) as client:
+        denied = await client.get(
+            "/actor",
+            headers={
+                "X-Mafia-Operator-ID": "42",
+                "X-Mafia-Operator-Login": "octocat",
+            },
+        )
+        assert denied.status_code == 401
+
+        accepted = await client.get(
+            "/actor",
+            headers={
+                "X-Mafia-Internal-Secret": "i" * 32,
+                "X-Mafia-Operator-ID": "42",
+                "X-Mafia-Operator-Login": "octocat",
+            },
+        )
+        assert accepted.json() == {"actor": "github:42:octocat"}

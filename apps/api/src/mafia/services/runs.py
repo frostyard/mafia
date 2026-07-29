@@ -1,9 +1,14 @@
 from mafia.config import get_settings
-from mafia.db.models import AuditEvent, Run
+from mafia.db.models import AuditEvent, Repository, Run
 from mafia.domain.enums import RequirementType, RunState, WorkflowType
 from mafia.domain.schemas import RunCreate
 from mafia.domain.state_machine import require_transition
-from mafia.services.repositories import get_or_create_repository, parse_repository
+from mafia.services.repositories import (
+    RepositoryIdentity,
+    get_or_create_repository,
+    parse_repository,
+    require_repository_owner,
+)
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -76,13 +81,20 @@ async def get_run(session: AsyncSession, run_id: str) -> Run:
     )
     if run is None:
         raise RunNotFoundError(run_id)
+    require_repository_owner(
+        RepositoryIdentity(run.repository.owner, run.repository.name)
+    )
     return run
 
 
 async def list_runs(session: AsyncSession) -> list[Run]:
-    result = await session.scalars(
-        select(Run).options(selectinload(Run.repository)).order_by(Run.updated_at.desc())
-    )
+    statement = select(Run).options(selectinload(Run.repository))
+    repository_owner = get_settings().repository_owner
+    if repository_owner is not None:
+        statement = statement.join(Repository).where(
+            Repository.owner.ilike(repository_owner)
+        )
+    result = await session.scalars(statement.order_by(Run.updated_at.desc()))
     return list(result)
 
 

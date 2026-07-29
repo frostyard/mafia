@@ -1,3 +1,4 @@
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -28,6 +29,26 @@ def test_model_pairs_parse_json_environment(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_authentication_is_disabled_by_default() -> None:
     assert Settings().auth_mode == "disabled"
+
+
+def test_github_app_requires_complete_configuration(tmp_path: Path) -> None:
+    with pytest.raises(ValidationError, match="requires app ID"):
+        Settings(github_app_id=123)
+
+    settings = Settings(
+        repository_owner="Frostyard",
+        github_app_id=123,
+        github_app_installation_id=456,
+        github_app_private_key_path=tmp_path / "app.pem",
+    )
+
+    assert settings.repository_owner == "Frostyard"
+    assert settings.github_app_enabled is True
+
+
+def test_repository_owner_rejects_invalid_github_owner() -> None:
+    with pytest.raises(ValidationError):
+        Settings(repository_owner="not/an-owner")
 
 
 def test_github_allowed_user_ids_parse_json_environment(

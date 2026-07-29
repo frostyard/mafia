@@ -5,7 +5,11 @@ from mafia.config import Settings
 from mafia.services.commands import CommandResult
 from mafia.services.github import RepositoryMetadata
 from mafia.services.repositories import RepositoryIdentity
-from mafia.services.workspaces import WorkspaceService
+from mafia.services.workspaces import (
+    WorkspaceError,
+    WorkspaceService,
+    reset_and_verify_origin,
+)
 
 
 @pytest.mark.asyncio
@@ -54,3 +58,33 @@ async def test_pull_request_refresh_fetches_exact_head_ref(
     assert "+refs/pull/42/head:refs/remotes/pull/42/head" in fetch
     assert resolved_base == base_sha
     assert resolved_head == head_sha
+
+
+@pytest.mark.asyncio
+async def test_reset_origin_rejects_remote_tampering(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = iter(
+        (
+            CommandResult(("git",), 0, "", ""),
+            CommandResult(
+                ("git",),
+                0,
+                "https://github.com/attacker/other.git\n",
+                "",
+            ),
+        )
+    )
+
+    async def command(*_args: object, **_kwargs: object) -> CommandResult:
+        return next(responses)
+
+    monkeypatch.setattr("mafia.services.workspaces.run_command", command)
+
+    with pytest.raises(WorkspaceError, match="does not match"):
+        await reset_and_verify_origin(
+            tmp_path,
+            RepositoryIdentity("octo", "repo"),
+            "https://github.com/octo/repo.git",
+        )
