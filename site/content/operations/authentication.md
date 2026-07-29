@@ -57,6 +57,18 @@ OAuth uses authorization code flow with PKCE and a signed, short-lived state coo
 
 The browser receives only a signed, HttpOnly, Secure, SameSite=Lax session cookie containing the immutable user ID, login, avatar URL, and expiration.
 
-Next.js protects pages, REST proxies, readiness, and CopilotKit. Keep FastAPI bound to loopback. `MAFIA_INTERNAL_SECRET` authenticates only server-to-server traffic from Next.js to FastAPI.
+Next.js and FastAPI both validate the signed browser session at their respective boundaries. Keep both listeners bound to loopback. `MAFIA_INTERNAL_SECRET` authenticates only server-to-server traffic from Next.js to FastAPI.
 
-See the repository's [`docs/authentication.md`](https://github.com/frostyard/mafia/blob/main/docs/authentication.md) for the complete Caddy `forward_auth` example.
+## Publish through Caddy
+
+Expose only Caddy. The repository's [`contrib/Caddyfile`](https://github.com/frostyard/mafia/blob/main/contrib/Caddyfile) terminates TLS and applies `forward_auth` before routing pages and CopilotKit to Next.js or REST, AG-UI, and readiness traffic to FastAPI.
+
+Set `MAFIA_DOMAIN` in Caddy's service environment, then validate and reload the configuration:
+
+```bash
+sudo MAFIA_DOMAIN=mafia.example.com caddy validate \
+  --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
+
+Never add `MAFIA_INTERNAL_SECRET` to Caddy or expose it to browsers.

@@ -1,0 +1,7 @@
+[Unit]
+Description=MAFIA application
+Requires=mafia-api.service mafia-web.service
+After=mafia-api.service mafia-web.service
+
+[Install]
+WantedBy=multi-user.target

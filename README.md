@@ -36,6 +36,7 @@ Open `http://127.0.0.1:3000`, create a run, and start the workflow.
   processes.
 - [GitHub authentication](docs/authentication.md) — OAuth App setup, user or organization authorization,
   secure sessions, and Caddy integration.
+- [Personal Incus deployment](docs/incus.md) — persistent VM profile, private tailnet ingress, and updates.
 
 ## License
 

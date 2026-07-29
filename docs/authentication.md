@@ -59,13 +59,17 @@ login, avatar URL, and expiration.
 
 ## Caddy
 
-Only expose the Next.js listener. Next.js enforces sessions for pages, REST
-proxies, readiness, and CopilotKit. Caddy can additionally reject requests
-before proxying application content:
+Keep both application listeners bound to loopback and expose only Caddy.
+`contrib/Caddyfile` terminates TLS, performs `forward_auth`, sends CopilotKit
+runtime requests and pages to Next.js, and sends authenticated REST, AG-UI, and
+readiness traffic to FastAPI:
 
 ```caddyfile
-mafia.example.com {
+{$MAFIA_DOMAIN:mafia.example.com} {
 	@auth path /auth/*
+	@copilotkit path /api/copilotkit /api/copilotkit/*
+	@api path /api/* /ag-ui /ag-ui/* /readyz
+
 	handle @auth {
 		reverse_proxy 127.0.0.1:3000
 	}
@@ -75,11 +79,28 @@ mafia.example.com {
 			uri /auth/forward
 			copy_headers X-Mafia-GitHub-User-ID X-Mafia-GitHub-Login
 		}
-		reverse_proxy 127.0.0.1:3000
+
+		route {
+			reverse_proxy @copilotkit 127.0.0.1:3000
+			reverse_proxy @api 127.0.0.1:8000 {
+				flush_interval -1
+			}
+			reverse_proxy 127.0.0.1:3000
+		}
 	}
 }
 ```
 
-Keep FastAPI bound to loopback. `MAFIA_INTERNAL_SECRET` authenticates only
-server-to-server traffic from Next.js to FastAPI; it must not be exposed to the
-browser or committed to source control.
+Set `MAFIA_DOMAIN` in Caddy's service environment, validate the configuration,
+and reload:
+
+```bash
+sudo MAFIA_DOMAIN=mafia.example.com caddy validate \
+  --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
+
+Caddy forwards the signed session cookie to FastAPI, which validates it again.
+`MAFIA_INTERNAL_SECRET` authenticates only server-to-server traffic from
+Next.js to FastAPI; it must not be exposed to the browser, added to Caddy, or
+committed to source control.

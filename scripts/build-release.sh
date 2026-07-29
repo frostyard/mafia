@@ -31,6 +31,7 @@ mkdir -p \
   "$staging/$release_name/api" \
   "$staging/$release_name/apps/api" \
   "$staging/$release_name/bin" \
+  "$staging/$release_name/contrib" \
   "$staging/$release_name/docs" \
   "$staging/$release_name/web"
 
@@ -51,12 +52,14 @@ fi
 
 cp -a apps/api/migrations "$staging/$release_name/apps/api/migrations"
 cp -a packaging/bin/. "$staging/$release_name/bin/"
+cp -a contrib/. "$staging/$release_name/contrib/"
+cp contrib/start.sh "$staging/$release_name/start.sh"
 cp packaging/launch.cjs "$staging/$release_name/web/launch.cjs"
 cp alembic.ini .env.example LICENSE "$staging/$release_name/"
 cp docs/deployment.md "$staging/$release_name/README.md"
 cp docs/authentication.md "$staging/$release_name/docs/authentication.md"
 printf '%s\n' "$version" >"$staging/$release_name/VERSION"
-chmod +x "$staging/$release_name"/bin/*
+chmod +x "$staging/$release_name"/bin/* "$staging/$release_name/start.sh"
 
 tar -C "$staging" -czf "$staging/$release_name.tar.gz" "$release_name"
 mv "$staging/$release_name" "$release_dir"

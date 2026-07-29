@@ -21,6 +21,7 @@ The release contains:
 - A mafia Python wheel and locked runtime requirements.
 - Alembic migrations and configuration.
 - Separate API and web launch commands.
+- A signal-safe combined launcher and example systemd units.
 
 ## Install the bundle
 
@@ -42,6 +43,8 @@ bin/api
 bin/web
 ```
 
+Use `./start.sh` when one foreground command is preferable. It forwards termination signals and stops the remaining process if either service exits.
+
 `bin/api` applies pending migrations before starting FastAPI. Both services bind to loopback by default:
 
 - Next.js: `http://127.0.0.1:3000`
@@ -49,4 +52,21 @@ bin/web
 
 Configure listeners with `MAFIA_WEB_HOST`, `MAFIA_WEB_PORT`, `MAFIA_API_HOST`, and `MAFIA_API_PORT`. `MAFIA_API_URL` and `AGENT_URL` must address FastAPI.
 
-Only expose Next.js through the external reverse proxy. Follow [GitHub authentication](/operations/authentication/) before publishing a deployment.
+## Run with systemd
+
+Example units are included under `contrib/systemd/`. They assume the active release is linked at `/opt/mafia/current`, configuration is stored at `/etc/mafia/mafia.env`, and persistent state lives at `/var/lib/mafia`.
+
+The dedicated `mafia` service user must own its GitHub and Copilot sessions. Grant container-engine access only when Dev Container execution needs it.
+
+Install and start the reviewed units:
+
+```bash
+sudo install -m 0644 contrib/systemd/mafia-*.service \
+  contrib/systemd/mafia.target /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now mafia.target
+```
+
+Keep Next.js and FastAPI on loopback and expose only the external reverse proxy. Follow [GitHub authentication](/operations/authentication/) and install the bundled `contrib/Caddyfile` before publishing a deployment.
+
+For a private VM with persistent workflow storage and tailnet-only ingress, continue with [personal Incus deployment](/operations/incus/).

@@ -1,0 +1,26 @@
+[Unit]
+Description=MAFIA Next.js service
+Documentation=https://github.com/frostyard/mafia
+Requires=mafia-api.service
+After=mafia-api.service
+
+[Service]
+Type=simple
+User=mafia
+Group=mafia
+WorkingDirectory=/opt/mafia/current
+Environment=HOME=/var/lib/mafia
+EnvironmentFile=/etc/mafia/mafia.env
+ExecStart=/opt/mafia/current/bin/web
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/mafia
+
+[Install]
+WantedBy=mafia.target

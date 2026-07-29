@@ -1,0 +1,35 @@
+{$MAFIA_DOMAIN:mafia.example.com} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "same-origin"
+	}
+
+	@auth path /auth/*
+	@copilotkit path /api/copilotkit /api/copilotkit/*
+	@api path /api/* /ag-ui /ag-ui/* /readyz
+
+	handle @auth {
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	handle {
+		forward_auth 127.0.0.1:3000 {
+			uri /auth/forward
+			copy_headers X-Mafia-GitHub-User-ID X-Mafia-GitHub-Login
+		}
+
+		route {
+			reverse_proxy @copilotkit 127.0.0.1:3000
+			reverse_proxy @api 127.0.0.1:8000 {
+				flush_interval -1
+			}
+			reverse_proxy 127.0.0.1:3000
+		}
+	}
+
+	log
+}

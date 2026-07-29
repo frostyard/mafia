@@ -14,7 +14,8 @@ The command produces both `dist/mafia-<version>/` and
 - the Next.js standalone production server and static assets;
 - a MAFIA Python wheel and locked runtime requirements;
 - Alembic migrations and configuration;
-- separate API and web launch commands.
+- separate API and web launch commands;
+- a signal-safe combined launcher and example systemd units.
 
 The target host needs Python 3.11-3.13, Node.js 22+, `git`, `gh`, and the GitHub
 Copilot CLI. Docker or Podman is required for Dev Container execution; rootless
@@ -49,6 +50,14 @@ bin/api
 bin/web
 ```
 
+For a foreground process manager or a temporary installation, `start.sh` starts
+both services. It forwards `SIGINT` and `SIGTERM`, stops the remaining process
+if either service exits, and returns the first service's exit status:
+
+```bash
+./start.sh
+```
+
 `bin/api` applies pending database migrations before starting FastAPI. By
 default both services bind only to loopback:
 
@@ -60,10 +69,46 @@ Configure the listeners with `MAFIA_WEB_HOST`, `MAFIA_WEB_PORT`,
 address the FastAPI listener. The default values are suitable when both
 processes run on the same host.
 
-The bundle intentionally keeps the processes separate so they can be managed
-by systemd or another supervisor. Only the Next.js listener needs to be exposed
-through the external reverse proxy.
+## systemd
+
+The bundle includes example units under `contrib/systemd/`. They assume:
+
+- releases are installed under `/opt/mafia/` and `/opt/mafia/current` points to
+  the active release;
+- a dedicated `mafia` user and group own runtime work;
+- deployment configuration is stored at `/etc/mafia/mafia.env`;
+- `MAFIA_DATA_DIR=/var/lib/mafia` and the `mafia` user's GitHub, Copilot, and
+  container-engine credentials live under `/var/lib/mafia`.
+
+Install the examples after reviewing their paths and hardening for the target
+host:
+
+```bash
+sudo install -d -m 0750 -o root -g mafia /etc/mafia
+sudo install -m 0640 -o root -g mafia .env /etc/mafia/mafia.env
+sudo install -m 0644 contrib/systemd/mafia-*.service \
+  contrib/systemd/mafia.target /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now mafia.target
+```
+
+Authenticate host tools as the service user before starting the units:
+
+```bash
+sudo -u mafia -H gh auth login
+sudo -u mafia -H copilot
+```
+
+Use the sign-in command supported by the installed Copilot CLI if it differs.
+If Dev Containers use Docker or Podman, grant the `mafia` user only the runtime
+access required by that host.
+
+The bundle intentionally keeps API and web supervision separate. Only the
+reverse proxy listens publicly; both application listeners remain on loopback.
 
 For public deployments, configure GitHub OAuth using
-`docs/authentication.md` before exposing the web listener. Authentication is
-disabled by default for loopback-only development.
+`docs/authentication.md` and install the example `contrib/Caddyfile`.
+Authentication is disabled by default for loopback-only development.
+
+For a private personal VM, follow `docs/incus.md` and start from the bundled
+`contrib/incus/personal.yaml` profile.
