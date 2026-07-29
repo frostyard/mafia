@@ -97,6 +97,12 @@ class PhaseRead(BaseModel):
     pr_number: int | None
     pr_url: str | None
     merge_sha: str | None
+    review_cycle: int
+    implementation_review_attempts: int
+    remediation_attempts: int
+    verification_attempts: int
+    candidate_base_sha: str | None
+    candidate_diff_hash: str | None
 
     model_config = {"from_attributes": True}
 

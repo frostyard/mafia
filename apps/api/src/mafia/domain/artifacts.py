@@ -195,6 +195,201 @@ class PhaseExecutionReport(BaseModel):
     known_limitations: list[str]
 
 
+class ChangedLineLocation(BaseModel):
+    file_path: str = Field(min_length=1)
+    side: Literal["new", "old"] = "new"
+    line_start: int = Field(gt=0)
+    line_end: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def ordered_lines(self) -> "ChangedLineLocation":
+        if self.line_end < self.line_start:
+            raise ValueError("line_end must not precede line_start")
+        return self
+
+
+ImplementationReviewCategory = Literal[
+    "requirements",
+    "correctness",
+    "security",
+    "compatibility",
+    "testing",
+    "operability",
+    "scope",
+]
+
+
+class ImplementationReviewArea(BaseModel):
+    category: ImplementationReviewCategory
+    assessment: str = Field(min_length=1)
+
+
+class ImplementationFinding(BaseModel):
+    id: str = Field(pattern=r"^IMP-\d+$")
+    severity: Literal["blocker", "major", "minor"]
+    category: ImplementationReviewCategory
+    confidence: float = Field(ge=0, le=1)
+    location: ChangedLineLocation
+    source_evidence: str = Field(min_length=1)
+    failure_scenario: str = Field(min_length=1)
+    suggested_remediation: str = Field(min_length=1)
+
+
+class ImplementationReview(BaseModel):
+    review_cycle: int = Field(gt=0)
+    base_sha: str = Field(min_length=7, max_length=64)
+    diff_hash: str = Field(min_length=64, max_length=64)
+    changed_files: list[str] = Field(min_length=1)
+    summary: str = Field(min_length=1)
+    areas: list[ImplementationReviewArea] = Field(min_length=7, max_length=7)
+    findings: list[ImplementationFinding]
+
+    @model_validator(mode="after")
+    def complete_and_stable(self) -> "ImplementationReview":
+        expected = {
+            "requirements",
+            "correctness",
+            "security",
+            "compatibility",
+            "testing",
+            "operability",
+            "scope",
+        }
+        actual = {area.category for area in self.areas}
+        if actual != expected:
+            raise ValueError(f"Implementation review areas mismatch: {sorted(expected - actual)}")
+        finding_ids = [finding.id for finding in self.findings]
+        if len(finding_ids) != len(set(finding_ids)):
+            raise ValueError("Implementation finding IDs must be unique")
+        return self
+
+
+class ImplementationFindingDisposition(BaseModel):
+    finding_id: str = Field(pattern=r"^IMP-\d+$")
+    disposition: Literal["accepted", "rejected", "duplicate", "deferred"]
+    evidence: list[str] = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+    duplicate_of: str | None = Field(default=None, pattern=r"^IMP-\d+$")
+
+    @model_validator(mode="after")
+    def valid_duplicate(self) -> "ImplementationFindingDisposition":
+        if (self.disposition == "duplicate") != (self.duplicate_of is not None):
+            raise ValueError("duplicate dispositions must name duplicate_of, and only duplicates may do so")
+        if self.duplicate_of == self.finding_id:
+            raise ValueError("A finding cannot duplicate itself")
+        return self
+
+
+class ImplementationReviewLedger(BaseModel):
+    review_cycle: int = Field(gt=0)
+    base_sha: str = Field(min_length=7, max_length=64)
+    diff_hash: str = Field(min_length=64, max_length=64)
+    summary: str = Field(min_length=1)
+    dispositions: list[ImplementationFindingDisposition]
+
+    def validate_coverage(self, review: ImplementationReview) -> None:
+        expected = {finding.id for finding in review.findings}
+        disposition_ids = [item.finding_id for item in self.dispositions]
+        actual = set(disposition_ids)
+        if expected != actual or len(disposition_ids) != len(actual):
+            raise ValueError(
+                "Implementation review ledger mismatch; "
+                f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+            )
+        by_id = {item.finding_id: item for item in self.dispositions}
+        severity = {finding.id: finding.severity for finding in review.findings}
+        for item in self.dispositions:
+            if item.disposition == "duplicate":
+                target_id = item.duplicate_of or ""
+                target = by_id.get(target_id)
+                if target is None or target.disposition != "accepted":
+                    raise ValueError(f"Duplicate {item.finding_id} must reference an accepted finding")
+                if severity[item.finding_id] in {"blocker", "major"} and severity[target_id] not in {
+                    "blocker",
+                    "major",
+                }:
+                    raise ValueError(f"Serious duplicate {item.finding_id} must reference a serious finding")
+
+    def accepted_blocker_major_ids(self, review: ImplementationReview) -> list[str]:
+        severity = {finding.id: finding.severity for finding in review.findings}
+        return [
+            item.finding_id
+            for item in self.dispositions
+            if item.disposition == "accepted" and severity[item.finding_id] in {"blocker", "major"}
+        ]
+
+    def unresolved_blocker_major_ids(self, review: ImplementationReview) -> list[str]:
+        severity = {finding.id: finding.severity for finding in review.findings}
+        return [
+            item.finding_id
+            for item in self.dispositions
+            if severity[item.finding_id] in {"blocker", "major"} and item.disposition == "deferred"
+        ]
+
+
+class RemediationEdit(BaseModel):
+    finding_id: str = Field(pattern=r"^IMP-\d+$")
+    changed_files: list[str] = Field(min_length=1)
+    summary: str = Field(min_length=1)
+
+
+class ImplementationRemediationReport(BaseModel):
+    review_cycle: int = Field(gt=0)
+    original_diff_hash: str = Field(min_length=64, max_length=64)
+    summary: str = Field(min_length=1)
+    edits: list[RemediationEdit] = Field(min_length=1)
+
+    def validate_coverage(self, accepted_ids: list[str]) -> None:
+        expected = set(accepted_ids)
+        edit_ids = [edit.finding_id for edit in self.edits]
+        actual = set(edit_ids)
+        if expected != actual or len(edit_ids) != len(actual):
+            raise ValueError(
+                "Remediation report mismatch; "
+                f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+            )
+
+
+class RemediationClosure(BaseModel):
+    finding_id: str = Field(pattern=r"^IMP-\d+$")
+    status: Literal["resolved", "unresolved"]
+    evidence: list[str] = Field(min_length=1)
+    rationale: str = Field(min_length=1)
+
+
+class RemediationRegression(BaseModel):
+    id: str = Field(pattern=r"^REG-\d+$")
+    severity: Literal["blocker", "major"]
+    category: ImplementationReviewCategory
+    confidence: float = Field(ge=0, le=1)
+    location: ChangedLineLocation
+    source_evidence: str = Field(min_length=1)
+    failure_scenario: str = Field(min_length=1)
+    suggested_remediation: str = Field(min_length=1)
+
+
+class RemediationVerification(BaseModel):
+    review_cycle: int = Field(gt=0)
+    original_diff_hash: str = Field(min_length=64, max_length=64)
+    remediated_diff_hash: str = Field(min_length=64, max_length=64)
+    summary: str = Field(min_length=1)
+    closures: list[RemediationClosure] = Field(min_length=1)
+    regressions: list[RemediationRegression]
+
+    def validate_coverage(self, accepted_ids: list[str]) -> None:
+        expected = set(accepted_ids)
+        closure_ids = [closure.finding_id for closure in self.closures]
+        actual = set(closure_ids)
+        if expected != actual or len(closure_ids) != len(actual):
+            raise ValueError(
+                "Remediation verification mismatch; "
+                f"missing={sorted(expected - actual)}, extra={sorted(actual - expected)}"
+            )
+
+    def unresolved_ids(self) -> list[str]:
+        return [closure.finding_id for closure in self.closures if closure.status == "unresolved"]
+
+
 class PullRequestFinding(BaseModel):
     id: str = Field(pattern=r"^FIND-\d+$")
     severity: Literal["critical", "high", "medium", "low"]
@@ -330,4 +525,63 @@ def pull_request_review_markdown(
         f"## Findings\n\n{findings}\n\n"
         f"## Strengths\n\n{strengths or 'None recorded.'}\n\n"
         f"## Testing assessment\n\n{review.testing_assessment}\n"
+    )
+
+def implementation_review_markdown(review: ImplementationReview) -> str:
+    findings = (
+        "\n\n".join(
+            (
+                f"### {finding.severity.upper()}: {finding.id}\n\n"
+                f"`{finding.location.file_path}:{finding.location.line_start}-"
+                f"{finding.location.line_end}` ({finding.location.side})\n\n"
+                f"{finding.failure_scenario}\n\n"
+                f"**Evidence:** {finding.source_evidence}\n\n"
+                f"**Suggested remediation:** {finding.suggested_remediation}"
+            )
+            for finding in review.findings
+        )
+        or "No findings."
+    )
+    areas = "\n".join(f"- **{area.category}:** {area.assessment}" for area in review.areas)
+    return (
+        f"# Implementation review cycle {review.review_cycle}\n\n"
+        f"{review.summary}\n\n## Coverage\n\n{areas}\n\n"
+        f"## Findings\n\n{findings}\n"
+    )
+
+
+def implementation_review_ledger_markdown(
+    ledger: ImplementationReviewLedger,
+) -> str:
+    dispositions = "\n".join(
+        f"- **{item.finding_id}: {item.disposition}** {item.rationale}" for item in ledger.dispositions
+    )
+    return (
+        f"# Implementation review ledger cycle {ledger.review_cycle}\n\n"
+        f"{ledger.summary}\n\n{dispositions or 'No findings to adjudicate.'}\n"
+    )
+
+
+def remediation_report_markdown(report: ImplementationRemediationReport) -> str:
+    edits = "\n".join(
+        f"- **{edit.finding_id}:** {edit.summary} ({', '.join(edit.changed_files)})" for edit in report.edits
+    )
+    return f"# Remediation report cycle {report.review_cycle}\n\n{report.summary}\n\n{edits}\n"
+
+
+def remediation_verification_markdown(verification: RemediationVerification) -> str:
+    closures = "\n".join(
+        f"- **{closure.finding_id}: {closure.status}** {closure.rationale}"
+        for closure in verification.closures
+    )
+    regressions = (
+        "\n".join(
+            f"- **{item.severity}: {item.id}** {item.failure_scenario}" for item in verification.regressions
+        )
+        or "No blocker or major regressions."
+    )
+    return (
+        f"# Remediation verification cycle {verification.review_cycle}\n\n"
+        f"{verification.summary}\n\n## Closure\n\n{closures}\n\n"
+        f"## Regressions\n\n{regressions}\n"
     )

@@ -64,3 +64,26 @@ def test_allows_pull_request_review_lifecycle(
     target: RunState,
 ) -> None:
     require_transition(current, target)
+
+
+@pytest.mark.parametrize(
+    ("current", "target"),
+    [
+        (RunState.EXECUTING_PHASE, RunState.REVIEWING_IMPLEMENTATION),
+        (RunState.REVIEWING_IMPLEMENTATION, RunState.ADJUDICATING_IMPLEMENTATION),
+        (RunState.ADJUDICATING_IMPLEMENTATION, RunState.EXECUTING_PHASE),
+        (RunState.ADJUDICATING_IMPLEMENTATION, RunState.REMEDIATING_IMPLEMENTATION),
+        (RunState.REMEDIATING_IMPLEMENTATION, RunState.VERIFYING_REMEDIATION),
+        (RunState.VERIFYING_REMEDIATION, RunState.EXECUTING_PHASE),
+    ],
+)
+def test_allows_bounded_implementation_review_lifecycle(current: RunState, target: RunState) -> None:
+    require_transition(current, target)
+
+
+def test_verification_cannot_transition_back_to_remediation() -> None:
+    with pytest.raises(InvalidTransitionError):
+        require_transition(
+            RunState.VERIFYING_REMEDIATION,
+            RunState.REMEDIATING_IMPLEMENTATION,
+        )

@@ -16,8 +16,12 @@ from mafia.domain.artifacts import (
     ConsolidatedPullRequestReview,
     EvidenceCitation,
     ImplementationPlan,
+    ImplementationRemediationReport,
+    ImplementationReview,
+    ImplementationReviewLedger,
     PhaseExecutionReport,
     PullRequestReview,
+    RemediationVerification,
     ReviewResolution,
     Specification,
     plan_markdown,
@@ -52,6 +56,10 @@ async def persist_artifact(
         | AdversarialReview
         | ReviewResolution
         | PhaseExecutionReport
+        | ImplementationReview
+        | ImplementationReviewLedger
+        | ImplementationRemediationReport
+        | RemediationVerification
         | PullRequestReview
         | ConsolidatedPullRequestReview
     ),

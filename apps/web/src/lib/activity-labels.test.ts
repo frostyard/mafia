@@ -9,6 +9,12 @@ describe("activity labels", () => {
   it("uses action-oriented labels for known operations", () => {
     expect(operationLabel("model.plan_generation")).toBe("Generating plan");
     expect(operationLabel("source.grounding")).toBe("Grounding source");
+    expect(operationLabel("model.implementation_review")).toBe(
+      "Reviewing implementation",
+    );
+    expect(operationLabel("model.remediation_verification")).toBe(
+      "Verifying remediation",
+    );
   });
 
   it("humanizes durable event identifiers", () => {

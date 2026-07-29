@@ -16,6 +16,19 @@ describe("StageTimeline", () => {
     expect(document.querySelector(".timeline-item.current")?.textContent).toContain("Plan and review");
   });
 
+  it.each([
+    "reviewing_implementation",
+    "adjudicating_implementation",
+    "remediating_implementation",
+    "verifying_remediation",
+  ])("marks %s as implementation work", (state) => {
+    render(<StageTimeline state={state} />);
+
+    expect(document.querySelector(".timeline-item.current")?.textContent).toContain(
+      "Implementation",
+    );
+  });
+
   it("renders pull request review stages", () => {
     render(
       <StageTimeline

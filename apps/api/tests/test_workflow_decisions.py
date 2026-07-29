@@ -675,3 +675,75 @@ async def test_pull_request_review_can_post_consolidated_comment(
         "Pull-request review posted: "
         "https://github.com/octo/repo/pull/42#issuecomment-1"
     ]
+
+
+@pytest.mark.asyncio
+async def test_failed_phase_retry_starts_a_new_review_cycle(
+    workflow_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mafia.services import lifecycle
+
+    monkeypatch.setattr(lifecycle, "SessionFactory", workflow_session_factory)
+    async with workflow_session_factory() as session:
+        repository = Repository(
+            owner="octo",
+            name="repo",
+            remote_url="https://github.com/octo/repo.git",
+        )
+        session.add(repository)
+        await session.flush()
+        run = Run(
+            repository_id=repository.id,
+            requirement_type=RequirementType.TEXT,
+            requirement_text="Retry the failed implementation review",
+            primary_model="gpt-5.6-sol",
+            reviewer_model="claude-opus-4.8",
+            state=RunState.FAILED,
+            failure_code="implementation_review_failed",
+            failure_message="IMP-1 remains unresolved",
+        )
+        session.add(run)
+        await session.flush()
+        phase = Phase(
+            run_id=run.id,
+            ordinal=1,
+            title="Bounded review",
+            objective="Retry explicitly",
+            dependencies=[],
+            details={},
+            status=PhaseState.FAILED,
+            plan_revision=1,
+            source_sha="a" * 40,
+            review_cycle=3,
+            implementation_review_attempts=1,
+            remediation_attempts=1,
+            verification_attempts=1,
+            candidate_base_sha="a" * 40,
+            candidate_diff_hash="b" * 64,
+        )
+        session.add(phase)
+        await session.commit()
+        run_id = run.id
+        phase_id = phase.id
+        thread_id = run.thread_id
+
+    context = RecordingContext()
+    await run_workflow.RunWorkflowExecutor(thread_id).start(
+        "Retry",
+        cast(WorkflowContext[Any, str], context),
+    )
+
+    async with workflow_session_factory() as session:
+        retried_run = await session.get(Run, run_id)
+        retried_phase = await session.get(Phase, phase_id)
+    assert retried_run is not None
+    assert retried_phase is not None
+    assert retried_run.state == RunState.READY_FOR_PHASE
+    assert retried_phase.status == PhaseState.READY
+    assert retried_phase.review_cycle == 4
+    assert retried_phase.implementation_review_attempts == 0
+    assert retried_phase.remediation_attempts == 0
+    assert retried_phase.verification_attempts == 0
+    assert retried_phase.candidate_base_sha is None
+    assert retried_phase.candidate_diff_hash is None

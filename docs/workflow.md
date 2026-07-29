@@ -16,11 +16,33 @@ The delivery workflow:
 5. Has the primary model adjudicate every finding and produce a revised, PR-sized phased plan.
 6. Pauses for the user to accept or refine the reviewed plan.
 7. Requires explicit approval before executing each phase.
-8. Pushes each completed phase and opens a pull request.
-9. Blocks the next phase until the preceding pull request is merged.
+8. Validates the implementation and freezes its exact staged diff.
+9. Sends that candidate to the competing model for one comprehensive implementation review.
+10. Has the primary model adjudicate every finding and, when needed, perform one bounded remediation.
+11. Has the competing model verify only the remediation's closure.
+12. Pushes the accepted phase and opens a pull request.
+13. Blocks the next phase until the preceding pull request is merged.
 
 Git pushes, pull-request creation, merge reconciliation, and crash recovery are deterministic host-owned
 operations rather than model-owned shell actions.
+
+### Bounded implementation review
+
+The implementation gate is deliberately finite: **review once, remediate once, verify once**. The competing
+model reviews the exact staged candidate against the approved phase for requirement coverage, correctness,
+security, compatibility, tests, operability, documentation, and pull-request scope. Every finding must cite
+a changed line.
+
+The primary model records an accepted, rejected, duplicate, or deferred disposition for every finding.
+Accepted blocker and major findings receive one remediation pass; accepted minor findings are recorded but
+do not trigger automatic edits. The competing model then performs closure-only verification of the accepted
+serious findings and checks only for blocker or major regressions introduced by the remediation. Verification
+cannot transition back to remediation.
+
+If a serious finding remains unresolved, the phase fails before commit, push, or pull-request creation. The
+operator can adjust the specification or explicitly retry the failed phase, which begins a new persisted
+review cycle. Review, remediation, and verification budgets and candidate diff hashes survive process
+restarts, so reconnecting cannot create an automatic review/fix loop.
 
 Workflow interrupts, checkpoints, artifacts, source evidence, approvals, operations, and execution state
 persist under `data/` and survive application restarts. On startup, MAFIA reconciles interrupted work and

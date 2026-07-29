@@ -201,6 +201,12 @@ class Phase(Base, TimestampMixin):
     pr_number: Mapped[int | None] = mapped_column(Integer)
     pr_url: Mapped[str | None] = mapped_column(Text)
     merge_sha: Mapped[str | None] = mapped_column(String(64))
+    review_cycle: Mapped[int] = mapped_column(Integer, default=1)
+    implementation_review_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    remediation_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    verification_attempts: Mapped[int] = mapped_column(Integer, default=0)
+    candidate_base_sha: Mapped[str | None] = mapped_column(String(64))
+    candidate_diff_hash: Mapped[str | None] = mapped_column(String(64))
 
     run: Mapped[Run] = relationship(back_populates="phases")
     __table_args__ = (UniqueConstraint("run_id", "ordinal"),)

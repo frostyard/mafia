@@ -57,7 +57,38 @@ ALLOWED_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
         }
     ),
     RunState.EXECUTING_PHASE: frozenset(
-        {RunState.PR_OPEN, RunState.READY_FOR_PHASE, RunState.CANCELLED, RunState.FAILED}
+        {
+            RunState.REVIEWING_IMPLEMENTATION,
+            RunState.PR_OPEN,
+            RunState.READY_FOR_PHASE,
+            RunState.CANCELLED,
+            RunState.FAILED,
+        }
+    ),
+    RunState.REVIEWING_IMPLEMENTATION: frozenset(
+        {
+            RunState.ADJUDICATING_IMPLEMENTATION,
+            RunState.CANCELLED,
+            RunState.FAILED,
+        }
+    ),
+    RunState.ADJUDICATING_IMPLEMENTATION: frozenset(
+        {
+            RunState.EXECUTING_PHASE,
+            RunState.REMEDIATING_IMPLEMENTATION,
+            RunState.CANCELLED,
+            RunState.FAILED,
+        }
+    ),
+    RunState.REMEDIATING_IMPLEMENTATION: frozenset(
+        {
+            RunState.VERIFYING_REMEDIATION,
+            RunState.CANCELLED,
+            RunState.FAILED,
+        }
+    ),
+    RunState.VERIFYING_REMEDIATION: frozenset(
+        {RunState.EXECUTING_PHASE, RunState.CANCELLED, RunState.FAILED}
     ),
     RunState.PR_OPEN: frozenset(
         {RunState.WAITING_FOR_MERGE, RunState.CANCELLED, RunState.FAILED}

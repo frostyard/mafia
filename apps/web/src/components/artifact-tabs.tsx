@@ -10,6 +10,19 @@ const specificationTabs: { kind: ArtifactKind; label: string }[] = [
   { kind: "review_ledger", label: "Review ledger" },
 ];
 
+const implementationReviewTabs: { kind: ArtifactKind; label: string }[] = [
+  { kind: "implementation_review", label: "Implementation review" },
+  {
+    kind: "implementation_review_ledger",
+    label: "Implementation decision",
+  },
+  { kind: "remediation_report", label: "Remediation" },
+  {
+    kind: "remediation_verification",
+    label: "Closure verification",
+  },
+];
+
 const pullRequestReviewTabs: { kind: ArtifactKind; label: string }[] = [
   { kind: "pull_request_review", label: "Model reviews" },
   {
@@ -73,10 +86,15 @@ export function ArtifactTabs({
   artifacts: Artifact[];
   workflowType?: WorkflowType;
 }) {
+  const hasImplementationReview = artifacts.some((artifact) =>
+    implementationReviewTabs.some((tab) => tab.kind === artifact.kind),
+  );
   const artifactTabs =
     workflowType === "pull_request_review"
       ? pullRequestReviewTabs
-      : specificationTabs;
+      : hasImplementationReview
+        ? [...specificationTabs, ...implementationReviewTabs]
+        : specificationTabs;
   const [activeKind, setActiveKind] = useState<ArtifactKind>(
     artifactTabs[0].kind,
   );

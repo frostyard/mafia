@@ -198,6 +198,12 @@ class RunWorkflowExecutor(Executor):
                     if phase is None:
                         raise LookupError(failed_phase_id)
                     phase.status = PhaseState.READY
+                    phase.review_cycle += 1
+                    phase.implementation_review_attempts = 0
+                    phase.remediation_attempts = 0
+                    phase.verification_attempts = 0
+                    phase.candidate_base_sha = None
+                    phase.candidate_diff_hash = None
                     failed_run.failure_code = None
                     failed_run.failure_message = None
                     await session.commit()
@@ -207,7 +213,10 @@ class RunWorkflowExecutor(Executor):
                         RunState.READY_FOR_PHASE,
                         expected_version=failed_run.version,
                         event_type="phase.retry_ready",
-                        payload={"phase_id": phase.id},
+                        payload={
+                            "phase_id": phase.id,
+                            "review_cycle": phase.review_cycle,
+                        },
                     )
                     await self._request_phase_start(phase, ctx)
                     return

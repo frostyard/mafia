@@ -34,6 +34,10 @@ WORKING_STATES = frozenset(
         RunState.ADJUDICATING_PLAN,
         RunState.PERSISTING_PLAN,
         RunState.EXECUTING_PHASE,
+        RunState.REVIEWING_IMPLEMENTATION,
+        RunState.ADJUDICATING_IMPLEMENTATION,
+        RunState.REMEDIATING_IMPLEMENTATION,
+        RunState.VERIFYING_REMEDIATION,
         RunState.PR_OPEN,
         RunState.REGROUNDING,
         RunState.GROUNDING_PR_REVIEW,
@@ -81,6 +85,18 @@ def _status(
         RunState.AWAITING_PLAN_DECISION: "Waiting for your reviewed-plan decision.",
         RunState.READY_FOR_PHASE: "Waiting for your approval to start the next phase.",
         RunState.EXECUTING_PHASE: "Working - implementing and validating the approved phase.",
+        RunState.REVIEWING_IMPLEMENTATION: (
+            "Working - reviewing the exact staged implementation candidate."
+        ),
+        RunState.ADJUDICATING_IMPLEMENTATION: (
+            "Working - adjudicating implementation review findings."
+        ),
+        RunState.REMEDIATING_IMPLEMENTATION: (
+            "Working - applying the single bounded implementation remediation."
+        ),
+        RunState.VERIFYING_REMEDIATION: (
+            "Working - verifying accepted findings are closed without serious regressions."
+        ),
         RunState.PR_OPEN: "Working - finalizing pull request metadata.",
         RunState.WAITING_FOR_MERGE: "Waiting for the pull request to merge. No input required.",
         RunState.REGROUNDING: "Working - source changed; re-grounding the remaining plan.",

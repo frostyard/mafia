@@ -20,6 +20,15 @@ from mafia.services.devcontainers import (
     find_devcontainer_config,
 )
 from mafia.services.github import gh_json
+from mafia.services.implementation_reviews import (
+    ImplementationReviewGateError,
+    ImplementationReviewService,
+    ImplementationReviewValidationError,
+    capture_staged_candidate,
+    record_candidate,
+    require_remediation_verified,
+    required_remediation_ids,
+)
 from mafia.services.lifecycle import pull_request_for_branch
 from mafia.services.locks import acquire_repository_lock, release_repository_lock
 from mafia.services.operations import active_run_work, tracked_operation
@@ -95,10 +104,24 @@ async def _record_phase_failure(run_id: str, phase_id: str, error: Exception) ->
         current_phase = await session.get(Phase, phase_id)
         if current_phase is not None:
             current_phase.status = PhaseState.FAILED
-        current_run.failure_code = "phase_execution_failed"
+        review_states = {
+            RunState.REVIEWING_IMPLEMENTATION,
+            RunState.ADJUDICATING_IMPLEMENTATION,
+            RunState.REMEDIATING_IMPLEMENTATION,
+            RunState.VERIFYING_REMEDIATION,
+        }
+        current_run.failure_code = (
+            "implementation_review_failed"
+            if current_run.state in review_states
+            or isinstance(
+                error,
+                (ImplementationReviewGateError, ImplementationReviewValidationError),
+            )
+            else "phase_execution_failed"
+        )
         current_run.failure_message = str(error)
         await session.commit()
-        if current_run.state == RunState.EXECUTING_PHASE:
+        if current_run.state in {RunState.EXECUTING_PHASE, *review_states}:
             await transition_run(
                 session,
                 current_run.id,
@@ -188,6 +211,7 @@ async def _execute_phase(
         await asyncio.shield(release_repository_lock(run.repository_id, lease_token))
         raise
     environment: ExecutionEnvironment | None = None
+    environment_close_attempted = False
     try:
         async with SessionFactory() as session:
             current_run = await get_run(session, run_id)
@@ -311,21 +335,137 @@ async def _execute_phase(
             changed_files = await validate_worktree_diff(worktree)
             await run_command(("git", "-C", str(worktree), "diff", "--check"))
             operation.set_result({"changed_files": changed_files})
-        for index, validation_command in enumerate(report.validation_commands, 1):
-            async with tracked_operation(
-                run_id=run.id,
-                phase_id=phase.id,
-                operation_type="environment.validation",
-                operation_key=f"{phase.id}:{index}",
-                timeout_seconds=900,
-                detail={"command": validation_command, "ordinal": index},
-            ) as operation:
-                result = await environment.run(validation_command, timeout_seconds=900)
-                operation.set_result({"returncode": result.returncode})
-                if result.returncode != 0:
-                    raise PhaseExecutionError(
-                        f"Validation failed: {validation_command}\n{result.stderr[-2_000:]}"
-                    )
+        async def run_reported_validation(stage: str) -> None:
+            for index, validation_command in enumerate(report.validation_commands, 1):
+                async with tracked_operation(
+                    run_id=run.id,
+                    phase_id=phase.id,
+                    operation_type="environment.validation",
+                    operation_key=f"{phase.id}:{stage}:{index}",
+                    timeout_seconds=900,
+                    detail={
+                        "command": validation_command,
+                        "ordinal": index,
+                        "stage": stage,
+                    },
+                ) as operation:
+                    result = await environment.run(validation_command, timeout_seconds=900)
+                    operation.set_result({"returncode": result.returncode})
+                    if result.returncode != 0:
+                        raise PhaseExecutionError(
+                            f"Validation failed: {validation_command}\n{result.stderr[-2_000:]}"
+                        )
+
+        await run_reported_validation("candidate")
+        candidate = await capture_staged_candidate(worktree)
+        await run_command(("git", "-C", str(worktree), "diff", "--cached", "--check"))
+        await record_candidate(phase.id, candidate)
+        review_service = ImplementationReviewService()
+        async with SessionFactory() as session:
+            current_run = await get_run(session, run.id)
+            await transition_run(
+                session,
+                current_run.id,
+                RunState.REVIEWING_IMPLEMENTATION,
+                expected_version=current_run.version,
+                event_type="implementation.review_started",
+                payload={
+                    "phase_id": phase.id,
+                    "review_cycle": phase.review_cycle,
+                    "diff_hash": candidate.diff_hash,
+                },
+            )
+        review, _ = await review_service.review(run, phase, worktree, candidate)
+        async with SessionFactory() as session:
+            current_run = await get_run(session, run.id)
+            await transition_run(
+                session,
+                current_run.id,
+                RunState.ADJUDICATING_IMPLEMENTATION,
+                expected_version=current_run.version,
+                event_type="implementation.review_completed",
+                payload={"phase_id": phase.id, "findings": len(review.findings)},
+            )
+        ledger, _ = await review_service.adjudicate(run, phase, worktree, candidate, review)
+        accepted = required_remediation_ids(review, ledger)
+        if accepted:
+            async with SessionFactory() as session:
+                current_run = await get_run(session, run.id)
+                await transition_run(
+                    session,
+                    current_run.id,
+                    RunState.REMEDIATING_IMPLEMENTATION,
+                    expected_version=current_run.version,
+                    event_type="implementation.remediation_started",
+                    payload={"phase_id": phase.id, "finding_ids": accepted},
+                )
+            remediation, _ = await review_service.remediate(
+                run,
+                phase,
+                worktree,
+                candidate,
+                review,
+                ledger,
+                tools=[read_file, write_file, run_in_environment],
+                activity_snapshot=environment.activity_snapshot,
+            )
+            changed_files = await validate_worktree_diff(worktree)
+            await run_command(("git", "-C", str(worktree), "add", "--all"))
+            await run_command(("git", "-C", str(worktree), "diff", "--cached", "--check"))
+            await run_reported_validation("remediation")
+            changed_files = await validate_worktree_diff(worktree)
+            remediated_candidate = await capture_staged_candidate(worktree)
+            await run_command(("git", "-C", str(worktree), "diff", "--cached", "--check"))
+            reported_remediation_files = {
+                path for edit in remediation.edits for path in edit.changed_files
+            }
+            unknown_remediation_files = (
+                reported_remediation_files - set(remediated_candidate.changed_files)
+            )
+            if unknown_remediation_files:
+                raise ImplementationReviewGateError(
+                    "Remediation report names files outside the staged candidate: "
+                    + ", ".join(sorted(unknown_remediation_files))
+                )
+            await record_candidate(phase.id, remediated_candidate)
+            async with SessionFactory() as session:
+                current_run = await get_run(session, run.id)
+                await transition_run(
+                    session,
+                    current_run.id,
+                    RunState.VERIFYING_REMEDIATION,
+                    expected_version=current_run.version,
+                    event_type="implementation.remediation_completed",
+                    payload={
+                        "phase_id": phase.id,
+                        "original_diff_hash": candidate.diff_hash,
+                        "remediated_diff_hash": remediated_candidate.diff_hash,
+                    },
+                )
+            verification, _ = await review_service.verify(
+                run,
+                phase,
+                worktree,
+                candidate,
+                remediated_candidate,
+                review,
+                ledger,
+                remediation,
+            )
+            require_remediation_verified(verification)
+            transition_event = "implementation.remediation_verified"
+        else:
+            transition_event = "implementation.review_accepted"
+        async with SessionFactory() as session:
+            current_run = await get_run(session, run.id)
+            await transition_run(
+                session,
+                current_run.id,
+                RunState.EXECUTING_PHASE,
+                expected_version=current_run.version,
+                event_type=transition_event,
+                payload={"phase_id": phase.id, "finding_ids": accepted},
+            )
         async with tracked_operation(
             run_id=run.id,
             phase_id=phase.id,
@@ -334,8 +474,10 @@ async def _execute_phase(
             timeout_seconds=60,
             detail=environment.description(),
         ) as operation:
+            description = environment.description()
             await environment.close()
-            operation.set_result({"removed": True, **environment.description()})
+            environment_close_attempted = True
+            operation.set_result({"removed": True, **description})
         async with tracked_operation(
             run_id=run.id,
             phase_id=phase.id,
@@ -489,5 +631,9 @@ async def _execute_phase(
         raise
     finally:
         await asyncio.shield(
-            _cleanup_phase_resources(environment, run.repository_id, lease_token)
+            _cleanup_phase_resources(
+                None if environment_close_attempted else environment,
+                run.repository_id,
+                lease_token,
+            )
         )

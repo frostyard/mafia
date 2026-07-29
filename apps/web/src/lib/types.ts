@@ -38,6 +38,10 @@ export type ArtifactKind =
   | "review"
   | "review_ledger"
   | "phase_result"
+  | "implementation_review"
+  | "implementation_review_ledger"
+  | "remediation_report"
+  | "remediation_verification"
   | "pull_request_review"
   | "pull_request_review_consolidated";
 
@@ -68,6 +72,12 @@ export interface Phase {
   pr_number: number | null;
   pr_url: string | null;
   merge_sha: string | null;
+  review_cycle: number;
+  implementation_review_attempts: number;
+  remediation_attempts: number;
+  verification_attempts: number;
+  candidate_base_sha: string | null;
+  candidate_diff_hash: string | null;
 }
 
 export interface Evidence {

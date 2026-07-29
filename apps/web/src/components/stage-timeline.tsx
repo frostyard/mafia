@@ -20,7 +20,15 @@ function specificationStageIndex(state: string): number {
   if (state === "intake" || state === "failed" || state === "cancelled") return 0;
   if (state.includes("spec")) return 1;
   if (state.includes("plan") || state === "grounding_plan" || state === "reviewing_plan") return 2;
-  if (state.includes("phase") || state === "executing_phase" || state === "regrounding") return 3;
+  if (
+    state.includes("phase") ||
+    state.includes("implementation") ||
+    state === "executing_phase" ||
+    state === "verifying_remediation" ||
+    state === "regrounding"
+  ) {
+    return 3;
+  }
   if (state.includes("pr") || state.includes("merge") || state === "completed") return 4;
   return 0;
 }
