@@ -9,8 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from mafia.agui.snapshots import SQLiteAGUIThreadSnapshotStore
 from mafia.agui.workflow import DurableAgentFrameworkWorkflow
+from mafia.api.auth import auth_router
 from mafia.api.routes import router
 from mafia.config import get_settings
+from mafia.services.auth_middleware import AuthenticationMiddleware
 from mafia.services.lifecycle import monitor_merges, recover_interrupted_runs
 from mafia.workflows.run_workflow import build_run_workflow
 
@@ -56,6 +58,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(AuthenticationMiddleware, settings=settings)
+    app.include_router(auth_router)
     app.include_router(router)
     snapshots = SQLiteAGUIThreadSnapshotStore()
     workflow = DurableAgentFrameworkWorkflow(

@@ -2,7 +2,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -27,6 +27,15 @@ class Settings(BaseSettings):
     operation_heartbeat_seconds: float = Field(default=15.0, ge=5.0)
     operation_stall_seconds: int = Field(default=300, ge=30)
     allowed_origins: list[str] = ["http://127.0.0.1:3000", "http://localhost:3000"]
+    auth_mode: Literal["disabled", "github"] = "disabled"
+    github_oauth_client_id: str | None = None
+    github_oauth_client_secret: SecretStr | None = None
+    github_oauth_callback_url: str | None = None
+    github_session_secret: SecretStr | None = None
+    internal_secret: SecretStr | None = None
+    github_allowed_user_ids: set[int] = Field(default_factory=lambda: set[int]())
+    github_allowed_org: str | None = None
+    github_session_hours: int = Field(default=12, ge=1, le=168)
     model_pairs: dict[str, str] = Field(
         default_factory=lambda: {
             "claude-opus-4.8": "gpt-5.6-sol",
@@ -53,6 +62,65 @@ class Settings(BaseSettings):
                 raise ValueError(f"Duplicate primary model: {primary}")
             normalized[primary] = reviewer
         return normalized
+
+    @field_validator("github_allowed_org")
+    @classmethod
+    def normalize_allowed_org(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if len(normalized) > 39 or not all(
+            character.isalnum() or character == "-" for character in normalized
+        ):
+            raise ValueError("GitHub organization must be a valid organization login")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_authentication(self) -> "Settings":
+        if self.auth_mode == "disabled":
+            return self
+        required = {
+            "github_oauth_client_id": self.github_oauth_client_id,
+            "github_oauth_client_secret": self.github_oauth_client_secret,
+            "github_oauth_callback_url": self.github_oauth_callback_url,
+            "github_session_secret": self.github_session_secret,
+            "internal_secret": self.internal_secret,
+        }
+        missing = sorted(name for name, value in required.items() if value is None)
+        if missing:
+            raise ValueError(
+                f"GitHub authentication requires settings: {', '.join(missing)}"
+            )
+        if not (self.github_oauth_client_id or "").strip():
+            raise ValueError("github_oauth_client_id must not be empty")
+        if (
+            self.github_oauth_client_secret is None
+            or not self.github_oauth_client_secret.get_secret_value()
+        ):
+            raise ValueError("github_oauth_client_secret must not be empty")
+        for name, secret in (
+            ("github_session_secret", self.github_session_secret),
+            ("internal_secret", self.internal_secret),
+        ):
+            if secret is None or len(secret.get_secret_value()) < 32:
+                raise ValueError(f"{name} must contain at least 32 characters")
+        if not self.github_allowed_user_ids and self.github_allowed_org is None:
+            raise ValueError(
+                "GitHub authentication requires github_allowed_user_ids or "
+                "github_allowed_org"
+            )
+        if any(user_id <= 0 for user_id in self.github_allowed_user_ids):
+            raise ValueError("GitHub allowed user IDs must be positive integers")
+        callback = self.github_oauth_callback_url or ""
+        if not callback.startswith("https://") and not callback.startswith(
+            ("http://127.0.0.1:", "http://localhost:")
+        ):
+            raise ValueError(
+                "GitHub OAuth callback must use HTTPS or an HTTP loopback address"
+            )
+        return self
 
     @property
     def required_models(self) -> set[str]:

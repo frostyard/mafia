@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import type { AuthenticatedUser } from "@/lib/auth";
 
-export function Header() {
+export function Header({ user }: { user?: AuthenticatedUser }) {
   const pathname = usePathname();
   const runsActive = pathname !== "/runs/new";
   return (
@@ -27,11 +28,20 @@ export function Header() {
         </Link>
       </nav>
       <div className="ph-side-foot">
-        <span className="ph-avatar" aria-hidden="true">GH</span>
-        <span className="ph-side-user">
-          <strong>Local operator</strong>
-          <small>GitHub Copilot</small>
+        <span className="ph-avatar" aria-hidden="true">
+          {user ? user.login.slice(0, 2).toUpperCase() : "GH"}
         </span>
+        <span className="ph-side-user">
+          <strong>{user?.login ?? "Local operator"}</strong>
+          <small>{user ? `GitHub ID ${user.github_user_id}` : "GitHub Copilot"}</small>
+        </span>
+        {user ? (
+          <form action="/auth/logout" method="post">
+            <button className="ph-sign-out" type="submit">
+              Sign out
+            </button>
+          </form>
+        ) : null}
       </div>
     </aside>
   );

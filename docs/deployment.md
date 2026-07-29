@@ -63,3 +63,7 @@ processes run on the same host.
 The bundle intentionally keeps the processes separate so they can be managed
 by systemd or another supervisor. Only the Next.js listener needs to be exposed
 through the external reverse proxy.
+
+For public deployments, configure GitHub OAuth using
+`docs/authentication.md` before exposing the web listener. Authentication is
+disabled by default for loopback-only development.

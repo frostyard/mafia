@@ -31,6 +31,7 @@ mkdir -p \
   "$staging/$release_name/api" \
   "$staging/$release_name/apps/api" \
   "$staging/$release_name/bin" \
+  "$staging/$release_name/docs" \
   "$staging/$release_name/web"
 
 uv build --wheel --out-dir "$staging/$release_name/api" --no-create-gitignore
@@ -53,6 +54,7 @@ cp -a packaging/bin/. "$staging/$release_name/bin/"
 cp packaging/launch.cjs "$staging/$release_name/web/launch.cjs"
 cp alembic.ini .env.example LICENSE "$staging/$release_name/"
 cp docs/deployment.md "$staging/$release_name/README.md"
+cp docs/authentication.md "$staging/$release_name/docs/authentication.md"
 printf '%s\n' "$version" >"$staging/$release_name/VERSION"
 chmod +x "$staging/$release_name"/bin/*
 

@@ -26,6 +26,44 @@ def test_model_pairs_parse_json_environment(monkeypatch: pytest.MonkeyPatch) -> 
     assert Settings().model_pairs == {"claude-sonnet-5": "gpt-5.7"}
 
 
+def test_authentication_is_disabled_by_default() -> None:
+    assert Settings().auth_mode == "disabled"
+
+
+def test_github_allowed_user_ids_parse_json_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MAFIA_GITHUB_ALLOWED_USER_IDS", "[37492,42]")
+
+    assert Settings().github_allowed_user_ids == {37492, 42}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("github_oauth_client_id", ""),
+        ("github_oauth_client_secret", ""),
+    ],
+)
+def test_github_auth_rejects_empty_oauth_credentials(
+    field: str,
+    value: str,
+) -> None:
+    settings: dict[str, object] = {
+        "auth_mode": "github",
+        "github_oauth_client_id": "client-id",
+        "github_oauth_client_secret": "client-secret",
+        "github_oauth_callback_url": "https://mafia.example/auth/callback",
+        "github_session_secret": "s" * 32,
+        "internal_secret": "i" * 32,
+        "github_allowed_user_ids": {37492},
+        field: value,
+    }
+
+    with pytest.raises(ValidationError):
+        Settings.model_validate(settings)
+
+
 @pytest.mark.asyncio
 async def test_models_index_exposes_configured_pairs(
     monkeypatch: pytest.MonkeyPatch,

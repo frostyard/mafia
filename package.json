@@ -4,7 +4,7 @@
   "license": "MIT",
   "packageManager": "npm@11.17.0",
   "scripts": {
-    "dev": "npm run dev --prefix apps/web",
+    "dev": "node --env-file-if-exists=.env apps/web/node_modules/next/dist/bin/next dev apps/web",
     "build": "npm run build --prefix apps/web",
     "bundle": "bash scripts/build-release.sh",
     "check": "npm run check:api && npm run check:web && npm run check:scripts",

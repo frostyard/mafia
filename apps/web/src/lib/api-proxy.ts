@@ -14,6 +14,10 @@ export async function proxyApiRequest(
   target.search = new URL(request.url).search;
   const headers = new Headers(request.headers);
   excludedRequestHeaders.forEach((header) => headers.delete(header));
+  const internalSecret = process.env.MAFIA_INTERNAL_SECRET;
+  if (internalSecret) {
+    headers.set("X-Mafia-Internal-Secret", internalSecret);
+  }
   const body =
     request.method === "GET" || request.method === "HEAD"
       ? undefined

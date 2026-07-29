@@ -33,6 +33,10 @@ npm run dev
 The API listens on `http://127.0.0.1:8000`; the web application listens on
 `http://127.0.0.1:3000`.
 
+The root `npm run dev` command loads the repository `.env` into Next.js.
+Authentication remains disabled unless `MAFIA_AUTH_MODE=github` is explicitly
+configured; see [GitHub web authentication](authentication.md).
+
 Runtime state is stored under `data/` and intentionally excluded from Git. It includes SQLite state,
 checkpoints, repository caches, analysis worktrees, and phase worktrees.
 

@@ -16,12 +16,19 @@ function apiBaseUrl(): string {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  if (!headers.has("Accept")) {
+    headers.set("Accept", "application/json");
+  }
+  if (typeof window === "undefined" && process.env.MAFIA_INTERNAL_SECRET) {
+    headers.set(
+      "X-Mafia-Internal-Secret",
+      process.env.MAFIA_INTERNAL_SECRET,
+    );
+  }
   const response = await fetch(`${apiBaseUrl()}${path}`, {
     ...init,
-    headers: {
-      Accept: "application/json",
-      ...init?.headers,
-    },
+    headers,
     cache: "no-store",
   });
 

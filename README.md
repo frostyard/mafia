@@ -32,6 +32,8 @@ Open `http://127.0.0.1:3000`, create a run, and start the workflow.
 - [Development](docs/development.md) — prerequisites, local services, runtime data, and validation commands.
 - [Deployment bundle](docs/deployment.md) — release packaging, installation, configuration, and production
   processes.
+- [GitHub authentication](docs/authentication.md) — OAuth App setup, user or organization authorization,
+  secure sessions, and Caddy integration.
 
 ## License
 
