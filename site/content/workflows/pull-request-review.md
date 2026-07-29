@@ -25,6 +25,11 @@ The selected adjudicator then:
 4. Rejects claims that are unsupported or outside changed lines.
 5. Persists one consolidated review.
 
+<figure class="dk-screenshot">
+  <img src="/images/app/pull-request-review.webp" alt="Pull request review run awaiting publication with independent review steps, source metrics, and consolidated findings" width="1680" height="1050" loading="lazy" />
+  <figcaption>The review workspace exposes both model passes, adjudication progress, consolidated findings, and the final publication gate.</figcaption>
+</figure>
+
 ## Decide whether to publish
 
 The workflow pauses before any GitHub mutation.

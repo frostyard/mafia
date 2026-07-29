@@ -19,6 +19,11 @@ Create a run with an `owner/repository`, a GitHub issue number or URL or written
 8. Push each completed phase and open a pull request.
 9. Block the next phase until the preceding pull request is merged.
 
+<figure class="dk-screenshot">
+  <img src="/images/app/specification-workflow.webp" alt="Specification delivery run awaiting reviewed plan approval with completed planning steps and source metrics" width="1680" height="1050" loading="lazy" />
+  <figcaption>The run workspace combines durable stage state, artifact revisions, source metrics, and human-readable planning activity.</figcaption>
+</figure>
+
 Workflow interrupts, checkpoints, artifacts, source evidence, approvals, operations, and execution state persist under `data/`. On startup, mafia reconciles interrupted work and existing pull requests before retrying side effects.
 
 ## Model pair

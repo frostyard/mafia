@@ -7,6 +7,11 @@ order: 1
 
 mafia is a source-grounded engineering workflow for specification-driven delivery and ad-hoc pull request review. It runs locally or as a private deployment using the operator's GitHub and Copilot identities.
 
+<figure class="dk-screenshot">
+  <img src="/images/app/run-dashboard.webp" alt="mafia workflow dashboard showing specification, pull request review, and completed runs" width="1536" height="960" />
+  <figcaption>The workflow dashboard keeps active decisions, completed work, model pairs, and durable run revisions visible.</figcaption>
+</figure>
+
 ## What this is
 
 Start with a GitHub issue, a written requirement, or an existing pull request:
@@ -16,6 +21,11 @@ Start with a GitHub issue, a written requirement, or an existing pull request:
 - Every mutation waits behind an explicit operator decision.
 
 Durable state, artifacts, source evidence, model operations, and approvals survive process restarts.
+
+<figure class="dk-screenshot">
+  <img src="/images/app/new-run.webp" alt="New mafia run form with workflow, repository, source, and primary model controls" width="1536" height="1000" loading="lazy" />
+  <figcaption>A run begins with one workflow, repository, source input, and configured model pair.</figcaption>
+</figure>
 
 ## Where the boundaries sit
 

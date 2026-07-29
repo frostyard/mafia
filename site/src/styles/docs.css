@@ -49,6 +49,9 @@
 .dk-prose blockquote{border-left:2px solid var(--sky);margin:0 0 1rem;padding:.2rem 0 .2rem 1.1rem;max-width:640px}
 .dk-prose hr{border:none;border-top:1px solid var(--line);margin:2rem 0}
 .dk-prose img{max-width:100%}
+.dk-screenshot{margin:1.4rem 0 2rem;max-width:640px}
+.dk-screenshot img{display:block;width:100%;height:auto;border:1px solid var(--line-strong);background:var(--surface-code)}
+.dk-screenshot figcaption{margin-top:.6rem;color:var(--text-dim);font:500 .7rem/1.5 var(--font-mono)}
 
 /* ── callout + prev/next (from the kit) ─────────────────────────── */
 .dk-callout{border:1px solid var(--line);border-left:2px solid var(--sky);background:var(--gradient-panel);padding:.9rem 1.1rem;font-size:.84rem;color:var(--text-muted);margin:0 0 1rem;max-width:640px}
