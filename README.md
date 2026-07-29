@@ -17,6 +17,7 @@ cp .env.example .env
 uv sync
 npm install
 npm install --prefix apps/web
+npm install --prefix site
 uv run alembic upgrade head
 uv run uvicorn mafia.main:app --reload
 npm run dev
@@ -26,6 +27,7 @@ Open `http://127.0.0.1:3000`, create a run, and start the workflow.
 
 ## Documentation
 
+- [Documentation site](https://mafia.frostyard.org) — guided setup, workflow, operations, and reference.
 - [Workflow lifecycle](docs/workflow.md) — artifacts, approvals, pull requests, durability, and recovery.
 - [Execution environments](docs/execution-environments.md) — Dev Containers, engines, networking, policy,
   resource limits, and bubblewrap fallback.

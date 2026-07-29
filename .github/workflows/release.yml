@@ -32,7 +32,9 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: apps/web/package-lock.json
+          cache-dependency-path: |
+            apps/web/package-lock.json
+            site/package-lock.json
       - name: Validate tag version
         run: |
           version="$(python -c 'import pathlib, tomllib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
@@ -41,6 +43,7 @@ jobs:
         run: |
           uv sync --frozen
           npm ci --prefix apps/web
+          npm ci --prefix site
       - name: Run validation
         run: npm run check
       - name: Build release bundle

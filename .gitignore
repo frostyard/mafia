@@ -27,6 +27,9 @@ dist/
 node_modules/
 .next/
 out/
+site/node_modules/
+site/dist/
+site/.astro/
 coverage/
 *.tsbuildinfo
 npm-debug.log*
