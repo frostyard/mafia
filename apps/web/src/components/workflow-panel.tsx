@@ -8,6 +8,7 @@ import {
 import { useCallback, useEffect, useState } from "react";
 import { resetRunToSpecification } from "@/lib/api";
 import type { WorkflowType } from "@/lib/types";
+import { startOrRestoreWorkflow } from "@/lib/workflow-control";
 
 interface DecisionProps {
   kind: "artifact" | "phase" | "pull_request_review";
@@ -183,12 +184,7 @@ function WorkflowControls({
     setError(undefined);
     setIsStarting(true);
     try {
-      agent.addMessage({
-        id: crypto.randomUUID(),
-        role: "user",
-        content: `Start workflow run ${runId}.`,
-      });
-      await agent.runAgent();
+      await startOrRestoreWorkflow(agent, runId, waitingForDecision);
     } catch {
       setError("The workflow could not start. Confirm that the agent service is running.");
     } finally {
