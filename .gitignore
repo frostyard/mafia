@@ -41,6 +41,7 @@ pnpm-debug.log*
 data/*
 !data/.gitkeep
 .worktrees/
+.superpowers/
 *.db
 *.db-shm
 *.db-wal
