@@ -124,4 +124,43 @@ describe("ProjectSettingsForm", () => {
     expect(screen.getAllByRole("alert")).toHaveLength(1);
     expect(screen.getAllByLabelText("Timeout (seconds)")[1].getAttribute("aria-invalid")).toBe("true");
   });
+
+  it("clears timeout errors when entering raw TOML mode", async () => {
+    render(<ProjectSettingsForm project={project} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add command" }));
+    fireEvent.change(screen.getByLabelText("Timeout (seconds)"), { target: { value: "0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save project settings" }));
+
+    expect(screen.getByRole("alert")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Host .mafia.toml"), { target: { value: "version = 1\n" } });
+
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("links every invalid timeout to its own error and blocks submission", async () => {
+    render(<ProjectSettingsForm project={project} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add command" }));
+    fireEvent.change(screen.getAllByLabelText("Timeout (seconds)")[0], { target: { value: "0" } });
+    fireEvent.change(screen.getAllByLabelText("Timeout (seconds)")[1], { target: { value: "3601" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save project settings" }));
+
+    await waitFor(() => expect(updateProjectConfiguration).not.toHaveBeenCalled());
+    expect(screen.getAllByRole("alert")).toHaveLength(2);
+    expect(screen.getAllByLabelText("Timeout (seconds)")[0].getAttribute("aria-describedby"))
+      .toBe("command-timeout-error-0");
+    expect(screen.getAllByLabelText("Timeout (seconds)")[1].getAttribute("aria-describedby"))
+      .toBe("command-timeout-error-1");
+  });
+
+  it("disables structured TOML download while a timeout draft is invalid", () => {
+    render(<ProjectSettingsForm project={project} />);
+    fireEvent.click(screen.getByRole("button", { name: "Add command" }));
+    fireEvent.change(screen.getByLabelText("Timeout (seconds)"), { target: { value: "0" } });
+
+    const download = screen.getByRole("button", { name: "Download TOML" });
+    expect(download).toHaveProperty("disabled", true);
+    expect(download.getAttribute("aria-describedby")).toBe("invalid-timeout-download-help");
+    expect(screen.getByText("Resolve timeout errors before downloading structured TOML.")).toBeTruthy();
+  });
 });

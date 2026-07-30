@@ -59,6 +59,7 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
   const [submitting, setSubmitting] = useState(false);
   const content = tomlOverride ?? generatedToml;
   const rawMode = tomlOverride !== undefined;
+  const hasInvalidTimeout = !rawMode && timeoutDrafts.some((timeout) => parseTimeout(timeout) === undefined);
 
   function updateCommand(index: number, change: Partial<ValidationCommand>) {
     setCommands((current) =>
@@ -231,6 +232,7 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
             value={content}
             onChange={(event) => {
               setTomlOverride(event.target.value);
+              setTimeoutErrors([]);
               setSaved(false);
             }}
           />
@@ -250,13 +252,29 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
             </button>
           ) : null}
         </div>
-        <a
-          className="button button-secondary button-small"
-          download={`${project.owner}-${project.name}.mafia.toml`}
-          href={`data:application/toml;charset=utf-8,${encodeURIComponent(content)}`}
-        >
-          Download TOML
-        </a>
+        {hasInvalidTimeout ? (
+          <>
+            <button
+              className="button button-secondary button-small"
+              type="button"
+              disabled
+              aria-describedby="invalid-timeout-download-help"
+            >
+              Download TOML
+            </button>
+            <p id="invalid-timeout-download-help" className="field-help">
+              Resolve timeout errors before downloading structured TOML.
+            </p>
+          </>
+        ) : (
+          <a
+            className="button button-secondary button-small"
+            download={`${project.owner}-${project.name}.mafia.toml`}
+            href={`data:application/toml;charset=utf-8,${encodeURIComponent(content)}`}
+          >
+            Download TOML
+          </a>
+        )}
       </details>
 
       {error ? <p className="form-alert" role="alert">{error}</p> : null}
