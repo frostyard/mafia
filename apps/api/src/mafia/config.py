@@ -16,8 +16,14 @@ class InitSettingsSourceProtocol(Protocol):
 
 
 class WithoutExplicitSettingsSource(PydanticBaseSettingsSource):
-    def __init__(self, source: PydanticBaseSettingsSource, explicit: set[str]) -> None:
+    def __init__(
+        self,
+        source: PydanticBaseSettingsSource,
+        explicit: set[str],
+        source_name: str,
+    ) -> None:
         super().__init__(source.settings_cls)
+        self.__name__ = source_name
         self.source = source
         self.explicit = explicit
 
@@ -96,8 +102,8 @@ class Settings(BaseSettings):
         explicit = set(init_kwargs)
         return (
             init_settings,
-            WithoutExplicitSettingsSource(env_settings, explicit),
-            WithoutExplicitSettingsSource(dotenv_settings, explicit),
+            WithoutExplicitSettingsSource(env_settings, explicit, "EnvSettingsSource"),
+            WithoutExplicitSettingsSource(dotenv_settings, explicit, "DotEnvSettingsSource"),
             file_secret_settings,
         )
 

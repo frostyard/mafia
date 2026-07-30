@@ -8,6 +8,12 @@ import pytest
 from mafia.api import routes
 from mafia.config import Settings
 from pydantic import ValidationError
+from pydantic_settings import (
+    DotEnvSettingsSource,
+    EnvSettingsSource,
+    InitSettingsSource,
+    SecretsSettingsSource,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -48,6 +54,25 @@ def test_explicit_model_pairs_replace_environment(monkeypatch: pytest.MonkeyPatc
     settings = settings_for_test(model_pairs={"new": "peer"})
 
     assert settings.model_pairs == {"new": "peer"}
+
+
+def test_filtered_settings_sources_have_distinct_names() -> None:
+    sources = Settings.settings_customise_sources(
+        Settings,
+        init_settings=InitSettingsSource(Settings, {}),
+        env_settings=EnvSettingsSource(Settings),
+        dotenv_settings=DotEnvSettingsSource(Settings),
+        file_secret_settings=SecretsSettingsSource(Settings),
+    )
+
+    assert sources[1].__name__ == "EnvSettingsSource"
+    assert sources[2].__name__ == "DotEnvSettingsSource"
+
+
+def test_production_environment_loads_unspecified_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MAFIA_API_HOST", "0.0.0.0")
+
+    assert Settings().api_host == "0.0.0.0"
 
 
 def test_authentication_is_disabled_by_default() -> None:
