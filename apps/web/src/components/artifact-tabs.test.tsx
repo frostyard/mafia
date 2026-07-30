@@ -84,17 +84,26 @@ describe("ArtifactTabs", () => {
   });
 
   it("formats artifact timestamps in UTC", () => {
-    render(
-      <ArtifactTabs
-        artifacts={[{
-          id: "artifact-utc", kind: "specification", schema_version: 1, revision: 1,
-          structured_data: {}, rendered_markdown: "# Specification", model: "model",
-          source_snapshot_id: null, created_at: "2026-07-30T12:00:00Z",
-        }]}
-      />,
-    );
+    const originalTimeZone = process.env.TZ;
+    try {
+      render(
+        <ArtifactTabs
+          artifacts={[{
+            id: "artifact-utc", kind: "specification", schema_version: 1, revision: 1,
+            structured_data: {}, rendered_markdown: "# Specification", model: "model",
+            source_snapshot_id: null, created_at: "2026-07-30T12:00:00Z",
+          }]}
+        />,
+      );
 
-    expect(formatTimestamp("2026-07-30T12:00:00Z")).toBe("Jul 30, 2026, 12:00 PM");
-    expect(screen.getByText("Jul 30, 2026, 12:00 PM")).toBeTruthy();
+      const utcTimestamp = formatTimestamp("2026-07-30T12:00:00Z");
+      process.env.TZ = "America/Los_Angeles";
+      expect(formatTimestamp("2026-07-30T12:00:00Z")).toBe(utcTimestamp);
+      expect(utcTimestamp).toBe("Jul 30, 2026, 12:00 PM");
+      expect(screen.getByText("Jul 30, 2026, 12:00 PM")).toBeTruthy();
+    } finally {
+      if (originalTimeZone === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTimeZone;
+    }
   });
 });

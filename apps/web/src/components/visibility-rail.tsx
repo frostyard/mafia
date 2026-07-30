@@ -11,7 +11,7 @@ import {
 } from "@/lib/activity-labels";
 import { shouldRefreshRunPage } from "@/lib/activity-refresh";
 import type { Operation, RunActivity, WorkflowType } from "@/lib/types";
-import { formatTimestamp, isRunState, isTerminalState } from "@/lib/workflow-state";
+import { formatTime, isRunState, isTerminalState } from "@/lib/workflow-state";
 
 const planSteps = [
   {
@@ -40,7 +40,7 @@ function formatElapsed(seconds: number): string {
 }
 
 function timeLabel(value: string): string {
-  return formatTimestamp(value);
+  return formatTime(value);
 }
 
 function isTerminalActivity(activity: RunActivity): boolean {

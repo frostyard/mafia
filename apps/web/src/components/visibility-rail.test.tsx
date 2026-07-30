@@ -1,4 +1,4 @@
-import { act, render } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { VisibilityRail } from "@/components/visibility-rail";
 import { getRunActivity } from "@/lib/api";
@@ -47,5 +47,30 @@ describe("VisibilityRail polling", () => {
 
     expect(getRunActivity).toHaveBeenCalledTimes(1);
     view.unmount();
+  });
+
+  it("renders activity event times in UTC with seconds", () => {
+    const originalTimeZone = process.env.TZ;
+    try {
+      process.env.TZ = "America/Los_Angeles";
+      render(
+        <VisibilityRail
+          initialActivity={{
+            ...activity("failed"),
+            events: [{
+              id: "event-1", event_type: "transition", from_state: "intake", to_state: "failed",
+              payload: {}, actor: "system", created_at: "2026-07-30T12:00:00Z",
+            }],
+          }}
+          runId="run-1"
+          workflowType="specification"
+        />,
+      );
+
+      expect(screen.getByText("12:00:00 PM")).toBeTruthy();
+    } finally {
+      if (originalTimeZone === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTimeZone;
+    }
   });
 });

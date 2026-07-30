@@ -49,6 +49,17 @@ export function formatTimestamp(value: string): string {
   }).format(date);
 }
 
+export function formatTime(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return "Time unavailable";
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    second: "2-digit",
+    timeZone: "UTC",
+  }).format(date);
+}
+
 export function runStateTone(state: RunState): StateTone {
   switch (state) {
     case "intake":

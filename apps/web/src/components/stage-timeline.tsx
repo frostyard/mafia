@@ -79,7 +79,10 @@ export function StageTimeline({
       {stages.map((stage, index) => {
         const status = index < current ? "complete" : index === current ? "current" : "pending";
         return (
-          <li className={`timeline-item ${status} ${index === current ? `tone-${tone}` : ""}`} key={stage.key}>
+          <li
+            className={`timeline-item ${status}${index === current ? ` tone-${tone}` : ""}`}
+            key={stage.key}
+          >
             <span className="timeline-dot" aria-hidden="true">
               {status === "complete" ? "ok" : index + 1}
             </span>
