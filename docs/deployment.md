@@ -69,6 +69,10 @@ Configure the listeners with `MAFIA_WEB_HOST`, `MAFIA_WEB_PORT`,
 address the FastAPI listener. The default values are suitable when both
 processes run on the same host.
 
+MAFIA supports exactly one API worker (`MAFIA_API_WORKERS=1`). Do not launch
+Uvicorn or Gunicorn with multiple workers: active-work cancellation is
+process-local, so multiple API processes can publish conflicting run state.
+
 ## systemd
 
 The bundle includes example units under `contrib/systemd/`. They assume:

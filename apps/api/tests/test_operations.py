@@ -1,6 +1,7 @@
 import asyncio
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 from mafia.db.base import Base
@@ -228,6 +229,66 @@ async def test_stalled_retry_closes_operation_and_fails_run(
 
 
 @pytest.mark.asyncio
+async def test_cancel_timeout_keeps_working_state(
+    operation_session_factory: OperationSessionFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, run_id = operation_session_factory
+    monkeypatch.setattr(
+        activity,
+        "_wait_for_active_work",
+        AsyncMock(side_effect=activity.RunControlError("still stopping")),
+    )
+
+    with pytest.raises(activity.RunControlError, match="still stopping"):
+        await activity.cancel_run(run_id)
+
+    async with factory() as session:
+        run = await session.get(Run, run_id)
+    assert run is not None
+    assert run.state == RunState.GENERATING_PLAN
+
+
+@pytest.mark.asyncio
+async def test_stalled_retry_timeout_keeps_working_state(
+    operation_session_factory: OperationSessionFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, run_id = operation_session_factory
+    stale = datetime.now(UTC) - timedelta(minutes=10)
+    async with factory() as session:
+        session.add(
+            Operation(
+                idempotency_key=f"{run_id}:-:model.plan_generation:timeout",
+                run_id=run_id,
+                operation_type="model.plan_generation",
+                request_hash="b" * 64,
+                status="running",
+                model="gpt-5.6-sol",
+                attempt=1,
+                timeout_seconds=900,
+                heartbeat_at=stale,
+                progress_at=stale,
+                detail={},
+            )
+        )
+        await session.commit()
+    monkeypatch.setattr(
+        activity,
+        "_wait_for_active_work",
+        AsyncMock(side_effect=activity.RunControlError("still stopping")),
+    )
+
+    with pytest.raises(activity.RunControlError, match="still stopping"):
+        await activity.prepare_retry(run_id)
+
+    async with factory() as session:
+        run = await session.get(Run, run_id)
+    assert run is not None
+    assert run.state == RunState.GENERATING_PLAN
+
+
+@pytest.mark.asyncio
 async def test_reset_to_specification_rotates_thread_and_invalidates_future_work(
     operation_session_factory: OperationSessionFixture,
 ) -> None:
@@ -318,6 +379,44 @@ async def test_reset_to_specification_rotates_thread_and_invalidates_future_work
     assert event is not None
     assert event.payload["invalidated_phase_ordinals"] == [3, 4]
     assert event.payload["preserved_phase_ordinals"] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_specification_reset_timeout_keeps_active_thread_and_state(
+    operation_session_factory: OperationSessionFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, run_id = operation_session_factory
+    async with factory() as session:
+        run = await session.get(Run, run_id)
+        assert run is not None
+        run.active_spec_revision = 1
+        original_thread_id = run.thread_id
+        session.add(
+            Artifact(
+                run_id=run.id,
+                kind=ArtifactKind.SPECIFICATION,
+                revision=1,
+                structured_data={},
+                rendered_markdown="Specification",
+                model=run.primary_model,
+            )
+        )
+        await session.commit()
+    monkeypatch.setattr(
+        activity,
+        "_wait_for_active_work",
+        AsyncMock(side_effect=activity.RunControlError("still stopping")),
+    )
+
+    with pytest.raises(activity.RunControlError, match="still stopping"):
+        await activity.reset_to_specification(run_id)
+
+    async with factory() as session:
+        run = await session.get(Run, run_id)
+    assert run is not None
+    assert run.state == RunState.GENERATING_PLAN
+    assert run.thread_id == original_thread_id
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     api_host: str = "127.0.0.1"
     api_port: int = 8000
+    api_workers: Literal[1] = 1
     command_timeout_seconds: float = Field(default=120.0, gt=0)
     command_output_limit: int = Field(default=1_000_000, gt=0)
     sandbox_process_limit: int = Field(default=128, ge=16, le=1024)

@@ -31,6 +31,11 @@ def test_authentication_is_disabled_by_default() -> None:
     assert Settings().auth_mode == "disabled"
 
 
+def test_api_workers_rejects_multiple_processes() -> None:
+    with pytest.raises(ValidationError):
+        Settings.model_validate({"api_workers": 2})
+
+
 def test_github_app_requires_complete_configuration(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="requires app ID"):
         Settings(github_app_id=123)

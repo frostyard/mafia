@@ -266,6 +266,12 @@ async def _close_running_operations(run_id: str, reason: str) -> None:
         await session.commit()
 
 
+async def _stop_active_work(run_id: str, reason: str) -> None:
+    cancel_active_work(run_id)
+    await _wait_for_active_work(run_id)
+    await _close_running_operations(run_id, reason)
+
+
 async def cancel_run(run_id: str) -> RunActivity:
     async with SessionFactory() as session:
         run = await get_run(session, run_id)
@@ -274,16 +280,17 @@ async def cancel_run(run_id: str) -> RunActivity:
         )
         if run.state not in WORKING_STATES:
             raise RunControlError("Only active work can be cancelled from the activity rail")
-        await transition_run(
-            session,
-            run.id,
-            RunState.CANCELLED,
-            expected_version=run.version,
-            event_type="run.cancel_requested",
-        )
-    cancel_active_work(run_id)
-    await _wait_for_active_work(run_id)
-    await _close_running_operations(run_id, "The user cancelled active work.")
+    await _stop_active_work(run_id, "The user cancelled active work.")
+    async with SessionFactory() as session:
+        run = await get_run(session, run_id)
+        if run.state in WORKING_STATES:
+            await transition_run(
+                session,
+                run.id,
+                RunState.CANCELLED,
+                expected_version=run.version,
+                event_type="run.cancel_requested",
+            )
     return await get_run_activity(run_id)
 
 
@@ -300,21 +307,21 @@ async def prepare_retry(run_id: str) -> RunActivity:
     if activity.state != RunState.FAILED and not activity.stalled:
         raise RunControlError("Only failed or stalled work can be retried")
     if activity.stalled:
+        await _stop_active_work(
+            run_id,
+            "The stalled operation was replaced by a retry.",
+        )
         async with SessionFactory() as session:
             run = await get_run(session, run_id)
-            if run.state not in WORKING_STATES:
-                raise RunControlError("The stalled run is no longer active")
-            await transition_run(
-                session,
-                run.id,
-                RunState.FAILED,
-                expected_version=run.version,
-                event_type="run.retry_requested",
-                payload={"reason": "stalled"},
-            )
-        cancel_active_work(run_id)
-        await _wait_for_active_work(run_id)
-        await _close_running_operations(run_id, "The stalled operation was replaced by a retry.")
+            if run.state in WORKING_STATES:
+                await transition_run(
+                    session,
+                    run.id,
+                    RunState.FAILED,
+                    expected_version=run.version,
+                    event_type="run.retry_requested",
+                    payload={"reason": "stalled"},
+                )
     elif has_active_work(run_id):
         raise RunControlError("The previous workflow attempt is still stopping")
     async with SessionFactory() as session:
@@ -342,21 +349,23 @@ async def reset_to_specification(run_id: str) -> Run:
             )
         if run.state == RunState.AWAITING_SPEC_DECISION:
             return run
-        if run.state in WORKING_STATES or has_active_work(run_id):
-            await transition_run(
-                session,
-                run.id,
-                RunState.CANCELLED,
-                expected_version=run.version,
-                event_type="specification.reset_cancel_requested",
-            )
-            cancel_active_work(run_id)
+        stop_required = run.state in WORKING_STATES or has_active_work(run_id)
 
-    await _wait_for_active_work(run_id)
-    await _close_running_operations(
-        run_id,
-        "Active work was cancelled to return to specification refinement.",
-    )
+    if stop_required:
+        await _stop_active_work(
+            run_id,
+            "Active work was cancelled to return to specification refinement.",
+        )
+        async with SessionFactory() as session:
+            run = await get_run(session, run_id)
+            if run.state in WORKING_STATES:
+                await transition_run(
+                    session,
+                    run.id,
+                    RunState.CANCELLED,
+                    expected_version=run.version,
+                    event_type="specification.reset_cancel_requested",
+                )
 
     async with SessionFactory() as session:
         run = await get_run(session, run_id)
