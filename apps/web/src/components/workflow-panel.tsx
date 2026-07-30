@@ -215,6 +215,7 @@ function WorkflowControls({
   const waitingForDecision =
     runState === "awaiting_spec_decision" ||
     runState === "awaiting_plan_decision" ||
+    runState === "ready_for_phase" ||
     runState === "awaiting_pr_review_decision";
   const canStart = runState === "intake" || runState === "failed";
   const showButton = canStart || (waitingForDecision && !decisionVisible);
