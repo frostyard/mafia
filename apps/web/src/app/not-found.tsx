@@ -4,8 +4,8 @@ export default function NotFound() {
   return (
     <section className="empty-state ph-card">
       <p className="eyebrow">Not found</p>
-      <h1>This workflow does not exist.</h1>
-      <Link className="button" href="/">Return to runs</Link>
+      <h1>This page does not exist.</h1>
+      <Link className="button" href="/">Return home</Link>
     </section>
   );
 }

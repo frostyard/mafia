@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createRun } from "@/lib/api";
 import { formatModelName, reviewerFor } from "@/lib/models";
@@ -19,8 +20,10 @@ const initialValues: RunFormValues = {
 
 export function RunForm({
   modelAvailability,
+  modelLoadError,
 }: {
   modelAvailability?: ModelAvailability;
+  modelLoadError?: string;
 }) {
   const router = useRouter();
   const modelPairs = modelAvailability?.pairs ?? [];
@@ -262,12 +265,19 @@ export function RunForm({
           ))}
         </select>
         <p id="primary-model-help" className="field-help">
-          {noModelsAvailable
+          {modelLoadError
+            ? modelLoadError
+            : noModelsAvailable
             ? "No required models are currently available. Try again after Copilot is ready."
             : values.workflowType === "pull_request_review"
               ? `${adjudicator} and ${reviewer} review independently. ${adjudicator} consolidates their findings.`
               : `Independent review will use ${reviewer}.`}
         </p>
+        {modelLoadError ? (
+          <p className="form-alert" role="alert">
+            {modelLoadError} <Link href="/runs/new">Try again</Link>
+          </p>
+        ) : null}
       </div>
 
       <div className="form-actions">

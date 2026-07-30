@@ -1,10 +1,32 @@
+import Link from "next/link";
 import { ProjectList } from "@/components/project-list";
 import { getProjects } from "@/lib/api";
+import type { ApiError, Project } from "@/lib/types";
 
 export const metadata = { title: "Projects" };
 
 export default async function ProjectsPage() {
-  const projects = await getProjects();
+  let projects: Project[] | undefined;
+  let requestError: ApiError | undefined;
+  try {
+    projects = await getProjects();
+  } catch (error) {
+    requestError = error as ApiError;
+  }
+  if (!projects) {
+    return (
+      <section className="empty-state ph-card" role="status">
+        <p className="eyebrow">Projects unavailable</p>
+        <h1>Project settings are unavailable</h1>
+        <p className="muted">
+          {requestError?.message ?? "Try again after the API is available."}
+        </p>
+        <Link className="button" href="/projects">
+          Try again
+        </Link>
+      </section>
+    );
+  }
   return (
     <>
       <header className="ph-topbar">
