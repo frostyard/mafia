@@ -5,6 +5,7 @@ import {
   useAgentContext,
   useInterrupt,
 } from "@copilotkit/react-core/v2";
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 import { resetRunToSpecification } from "@/lib/api";
 import type { WorkflowType } from "@/lib/types";
@@ -171,8 +172,10 @@ function WorkflowControls({
   workflowType: WorkflowType;
 }) {
   const { agent, isReady } = useAgent({ agentId: "mafia" });
+  const router = useRouter();
   const [isStarting, setIsStarting] = useState(false);
   const [isResetting, setIsResetting] = useState(false);
+  const [isConfirmingReset, setIsConfirmingReset] = useState(false);
   const [error, setError] = useState<string>();
 
   useAgentContext({
@@ -193,21 +196,18 @@ function WorkflowControls({
   }
 
   async function resetSpecification() {
-    const confirmed = window.confirm(
-      "Return to specification refinement? Unstarted phases and the active plan will be " +
-        "discarded. Merged phases and phases with an open pull request will remain recorded.",
-    );
-    if (!confirmed) return;
     setError(undefined);
     setIsResetting(true);
     try {
       await resetRunToSpecification(runId);
-      window.location.reload();
+      setIsConfirmingReset(false);
+      router.refresh();
     } catch (resetError) {
       setError(
         (resetError as { message?: string }).message ??
           "The workflow could not return to specification refinement.",
       );
+    } finally {
       setIsResetting(false);
     }
   }
@@ -245,7 +245,10 @@ function WorkflowControls({
             <button
               className="button button-secondary"
               disabled={isStarting || isResetting}
-              onClick={resetSpecification}
+              onClick={() => {
+                setError(undefined);
+                setIsConfirmingReset(true);
+              }}
               type="button"
             >
               {isResetting ? "Resetting..." : "Adjust specification"}
@@ -254,7 +257,7 @@ function WorkflowControls({
           {showButton ? (
             <button
               className="button"
-              disabled={!isReady || isStarting || isResetting}
+              disabled={isStarting || isResetting}
               onClick={start}
               type="button"
             >
@@ -263,6 +266,38 @@ function WorkflowControls({
           ) : null}
         </div>
       </div>
+      {showButton && !isReady ? (
+        <p className="connection-warning">
+          The agent connection is not ready. This action will attempt to reconnect it.
+        </p>
+      ) : null}
+      {isConfirmingReset ? (
+        <section className="reset-confirmation" role="alert">
+          <p>
+            Return to specification refinement? Unstarted phases and the active
+            plan will be discarded. Merged phases and phases with an open pull
+            request will remain recorded.
+          </p>
+          <div className="decision-actions">
+            <button
+              className="button"
+              disabled={isResetting}
+              onClick={resetSpecification}
+              type="button"
+            >
+              {isResetting ? "Resetting..." : "Confirm adjustment"}
+            </button>
+            <button
+              className="button button-quiet"
+              disabled={isResetting}
+              onClick={() => setIsConfirmingReset(false)}
+              type="button"
+            >
+              Keep current specification
+            </button>
+          </div>
+        </section>
+      ) : null}
       {error ? <p className="form-alert" role="alert">{error}</p> : null}
     </>
   );
