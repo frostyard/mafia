@@ -76,7 +76,9 @@ describe("RunForm", () => {
       "Model availability could not be loaded.",
     );
     expect(screen.queryByText(/No required models are currently available/)).toBeNull();
-    expect(screen.getByRole("link", { name: "Try again" }).getAttribute("href")).toBe("/runs/new");
+    const retry = screen.getByRole("link", { name: "Try again" });
+    expect(retry.tagName).toBe("A");
+    expect(retry.getAttribute("href")).toBe("/runs/new");
   });
 
   it("shows the empty model state when availability is loaded without pairs", () => {

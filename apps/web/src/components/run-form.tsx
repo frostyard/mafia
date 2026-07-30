@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { createRun } from "@/lib/api";
 import { formatModelName, reviewerFor } from "@/lib/models";
@@ -275,7 +274,8 @@ export function RunForm({
         </p>
         {modelLoadError ? (
           <p className="form-alert" role="alert">
-            {modelLoadError} <Link href="/runs/new">Try again</Link>
+            {modelLoadError} {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+            <a href="/runs/new">Try again</a>
           </p>
         ) : null}
       </div>

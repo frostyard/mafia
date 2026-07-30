@@ -30,9 +30,9 @@ export default async function ProjectPage({
         <p className="muted">
           {requestError?.message ?? "Try again after the API is available."}
         </p>
-        <Link className="button" href={`/projects/${id}`}>
+        <a className="button" href={`/projects/${id}`}>
           Try again
-        </Link>
+        </a>
       </section>
     );
   }

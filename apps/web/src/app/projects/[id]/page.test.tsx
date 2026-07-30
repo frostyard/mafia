@@ -4,11 +4,6 @@ import ProjectPage from "./page";
 import { notFound } from "next/navigation";
 import { getProject } from "@/lib/api";
 
-vi.mock("next/link", () => ({
-  default: ({ children, href }: { children: React.ReactNode; href: string }) => (
-    <a href={href}>{children}</a>
-  ),
-}));
 vi.mock("next/navigation", () => ({ notFound: vi.fn() }));
 vi.mock("@/components/project-settings-form", () => ({
   ProjectSettingsForm: () => null,
@@ -41,6 +36,8 @@ describe("ProjectPage", () => {
       screen.getByRole("heading", { name: "Project settings are unavailable" }),
     ).toBeTruthy();
     expect(notFound).not.toHaveBeenCalled();
-    expect(screen.getByRole("link", { name: "Try again" }).getAttribute("href")).toBe("/projects/project-1");
+    const retry = screen.getByRole("link", { name: "Try again" });
+    expect(retry.tagName).toBe("A");
+    expect(retry.getAttribute("href")).toBe("/projects/project-1");
   });
 });

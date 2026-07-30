@@ -1,4 +1,3 @@
-import Link from "next/link";
 import { ProjectList } from "@/components/project-list";
 import { getProjects } from "@/lib/api";
 import type { ApiError, Project } from "@/lib/types";
@@ -21,9 +20,11 @@ export default async function ProjectsPage() {
         <p className="muted">
           {requestError?.message ?? "Try again after the API is available."}
         </p>
-        <Link className="button" href="/projects">
+        {/* A document navigation is required to retry the failed server request. */}
+        {/* eslint-disable-next-line @next/next/no-html-link-for-pages */}
+        <a className="button" href="/projects">
           Try again
-        </Link>
+        </a>
       </section>
     );
   }

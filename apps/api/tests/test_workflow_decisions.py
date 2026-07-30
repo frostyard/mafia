@@ -25,7 +25,7 @@ from mafia.domain.enums import (
 )
 from mafia.services import operations
 from mafia.services.commands import CommandResult
-from mafia.services.execution import PhaseExecutionError
+from mafia.services.execution import PhaseExecutionError, PhaseNotReadyError
 from mafia.services.pr_reviews import PullRequestReviewService
 from mafia.workflows import run_workflow
 from sqlalchemy import select
@@ -410,7 +410,7 @@ async def test_phase_start_that_becomes_stale_is_ignored(
             assert current_phase is not None
             current_phase.status = PhaseState.EXECUTING
             await session.commit()
-        raise PhaseExecutionError("Phase is not ready for execution")
+        raise PhaseNotReadyError()
 
     execute_phase = AsyncMock(side_effect=become_stale)
     monkeypatch.setattr("mafia.services.execution.execute_phase", execute_phase)
@@ -426,6 +426,28 @@ async def test_phase_start_that_becomes_stale_is_ignored(
     assert context.outputs == [
         "Ignored a stale phase decision because the phase is no longer ready."
     ]
+
+
+@pytest.mark.asyncio
+async def test_phase_start_reraises_non_readiness_execution_errors(
+    workflow_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with workflow_session_factory() as session:
+        run, phase = await ready_phase(session)
+
+    execute_phase = AsyncMock(side_effect=PhaseExecutionError("Phase is not ready for execution"))
+    monkeypatch.setattr("mafia.services.execution.execute_phase", execute_phase)
+    context = RecordingContext()
+
+    with pytest.raises(PhaseExecutionError, match="Phase is not ready for execution"):
+        await run_workflow.RunWorkflowExecutor(run.thread_id).decide_phase(
+            phase_decision_request(phase),
+            {"action": "start"},
+            cast(WorkflowContext[Any, str], context),
+        )
+
+    assert context.outputs == []
 
 
 @pytest.mark.asyncio

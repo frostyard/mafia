@@ -1325,13 +1325,11 @@ class RunWorkflowExecutor(Executor):
                 )
                 await ctx.yield_output("Run cancelled.")
                 return
-        from mafia.services.execution import PhaseExecutionError, execute_phase
+        from mafia.services.execution import PhaseNotReadyError, execute_phase
 
         try:
             await execute_phase(original_request.run_id, original_request.phase_id, ctx)
-        except PhaseExecutionError as error:
-            if str(error) != "Phase is not ready for execution":
-                raise
+        except PhaseNotReadyError:
             async with SessionFactory() as session:
                 run = await get_run(session, original_request.run_id)
                 phase = await session.get(Phase, original_request.phase_id)
