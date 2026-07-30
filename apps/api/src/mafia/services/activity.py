@@ -366,15 +366,16 @@ async def reset_to_specification(run_id: str) -> Run:
         )
         async with SessionFactory() as session:
             run = await get_run(session, run_id)
-            if was_working and run.state not in WORKING_STATES:
+            if run.state in WORKING_STATES:
+                await transition_run(
+                    session,
+                    run.id,
+                    RunState.CANCELLED,
+                    expected_version=run.version,
+                    event_type="specification.reset_cancel_requested",
+                )
+            elif was_working:
                 return run
-            await transition_run(
-                session,
-                run.id,
-                RunState.CANCELLED,
-                expected_version=run.version,
-                event_type="specification.reset_cancel_requested",
-            )
 
     async with SessionFactory() as session:
         run = await get_run(session, run_id)
