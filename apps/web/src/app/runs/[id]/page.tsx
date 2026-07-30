@@ -26,10 +26,12 @@ function DetailCard({
 function RunDetailView({
   run,
   evidence,
+  evidenceError,
   activity,
 }: {
   run: RunDetail;
   evidence: Evidence[];
+  evidenceError?: string;
   activity: RunActivity;
 }) {
   const repositoryName = `${run.repository.owner}/${run.repository.name}`;
@@ -162,7 +164,7 @@ function RunDetailView({
           artifacts={run.artifacts}
           workflowType={run.workflow_type}
         />
-        <EvidenceDrawer evidence={evidence} />
+        <EvidenceDrawer evidence={evidence} error={evidenceError} />
         {!isPullRequestReview ? <PhaseBoard phases={run.phases} /> : null}
         <WorkflowPanel
           activeSpecRevision={run.active_spec_revision}
@@ -182,17 +184,29 @@ export default async function RunPage({ params }: { params: Promise<{ id: string
   let evidence: Evidence[] = [];
   let activity: RunActivity | undefined;
   let requestError: ApiError | undefined;
+  let evidenceError: string | undefined;
+  const evidenceRequest = getEvidence(id).then(
+    (loadedEvidence) => ({ evidence: loadedEvidence, error: undefined }),
+    () => ({ evidence: [], error: "Source evidence is unavailable." }),
+  );
   try {
-    [run, evidence, activity] = await Promise.all([
+    [run, activity] = await Promise.all([
       getRun(id),
-      getEvidence(id),
       getRunActivity(id),
     ]);
+    ({ evidence, error: evidenceError } = await evidenceRequest);
   } catch (error) {
     requestError = error as ApiError;
   }
   if (run && activity) {
-    return <RunDetailView run={run} evidence={evidence} activity={activity} />;
+    return (
+      <RunDetailView
+        activity={activity}
+        evidence={evidence}
+        evidenceError={evidenceError}
+        run={run}
+      />
+    );
   }
   if (requestError?.code === "run_not_found") {
     notFound();

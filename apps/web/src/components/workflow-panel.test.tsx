@@ -6,6 +6,7 @@ import { startOrRestoreWorkflow } from "@/lib/workflow-control";
 
 const refresh = vi.fn();
 const agent = { addMessage: vi.fn(), runAgent: vi.fn() };
+let mockedInterrupt: unknown = null;
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ refresh }),
@@ -14,7 +15,8 @@ vi.mock("next/navigation", () => ({
 vi.mock("@copilotkit/react-core/v2", () => ({
   useAgent: () => ({ agent, isReady: false }),
   useAgentContext: vi.fn(),
-  useInterrupt: () => null,
+  useInterrupt: ({ render }: { render: (props: { interrupt: unknown; resolve: () => Promise<unknown> }) => React.ReactNode }) =>
+    mockedInterrupt ? render({ interrupt: mockedInterrupt, resolve: vi.fn() }) : null,
 }));
 
 vi.mock("@/lib/api", () => ({
@@ -27,6 +29,7 @@ vi.mock("@/lib/workflow-control", () => ({
 
 describe("WorkflowPanel recovery controls", () => {
   beforeEach(() => {
+    mockedInterrupt = null;
     refresh.mockReset();
     vi.mocked(resetRunToSpecification).mockReset();
     vi.mocked(startOrRestoreWorkflow).mockReset();
@@ -120,5 +123,30 @@ describe("WorkflowPanel recovery controls", () => {
       expect(resetRunToSpecification).toHaveBeenCalledWith("run-1"),
     );
     expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  it("renders the workflow request prompt from Agent Framework metadata", () => {
+    mockedInterrupt = {
+      metadata: {
+        agent_framework: {
+          request_type: "PhaseDecisionRequest",
+          data: { prompt: "Start phase 2 using repository validation?" },
+        },
+      },
+    };
+
+    render(
+      <WorkflowPanel
+        activeSpecRevision={1}
+        runId="run-1"
+        runState="ready_for_phase"
+        threadId="thread-1"
+        workflowType="specification"
+      />,
+    );
+
+    expect(
+      screen.getByText("Start phase 2 using repository validation?"),
+    ).toBeTruthy();
   });
 });

@@ -117,12 +117,30 @@ function DecisionCard({ kind, message, resolve }: DecisionProps) {
   );
 }
 
-function interruptRequestType(metadata: unknown): string | undefined {
+const DEFAULT_PROMPT = "The workflow is waiting for a decision.";
+
+function metadataFramework(metadata: unknown): Record<string, unknown> | undefined {
   if (typeof metadata !== "object" || metadata === null) return undefined;
   const framework = (metadata as Record<string, unknown>).agent_framework;
-  if (typeof framework !== "object" || framework === null) return undefined;
-  const requestType = (framework as Record<string, unknown>).request_type;
+  return typeof framework === "object" && framework !== null
+    ? (framework as Record<string, unknown>)
+    : undefined;
+}
+
+function interruptRequestType(metadata: unknown): string | undefined {
+  const requestType = metadataFramework(metadata)?.request_type;
   return typeof requestType === "string" ? requestType : undefined;
+}
+
+export function interruptPrompt(interrupt: unknown): string {
+  if (typeof interrupt !== "object" || interrupt === null) return DEFAULT_PROMPT;
+  const value = interrupt as Record<string, unknown>;
+  const data = metadataFramework(value.metadata)?.data;
+  if (typeof data === "object" && data !== null) {
+    const prompt = (data as Record<string, unknown>).prompt;
+    if (typeof prompt === "string") return prompt;
+  }
+  return typeof value.message === "string" ? value.message : DEFAULT_PROMPT;
 }
 
 function WorkflowDecisions({
@@ -134,7 +152,7 @@ function WorkflowDecisions({
     agentId: "mafia",
     renderInChat: false,
     render: ({ interrupt, resolve }) => {
-      const message = interrupt?.message ?? "The workflow is waiting for a decision.";
+      const message = interruptPrompt(interrupt);
       const requestType = interruptRequestType(interrupt?.metadata);
       const kind =
         requestType === "PhaseDecisionRequest"
