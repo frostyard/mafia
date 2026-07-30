@@ -63,6 +63,34 @@ describe("WorkflowPanel recovery controls", () => {
     );
   });
 
+  it("restores phase approval controls after an interrupted stream", async () => {
+    vi.mocked(startOrRestoreWorkflow).mockResolvedValue();
+    render(
+      <WorkflowPanel
+        activeSpecRevision={1}
+        runId="run-1"
+        runState="ready_for_phase"
+        threadId="thread-1"
+        workflowType="specification"
+      />,
+    );
+
+    const restore = screen.getByRole("button", {
+      name: "Restore decision controls",
+    });
+    expect((restore as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(restore);
+
+    await waitFor(() =>
+      expect(startOrRestoreWorkflow).toHaveBeenCalledWith(
+        agent,
+        "run-1",
+        true,
+      ),
+    );
+  });
+
   it("confirms specification reset in the page before sending it", async () => {
     vi.mocked(resetRunToSpecification).mockResolvedValue({} as never);
     render(
