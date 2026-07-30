@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ArtifactTabs } from "@/components/artifact-tabs";
+import { formatTimestamp } from "@/lib/workflow-state";
 
 describe("ArtifactTabs", () => {
   it("renders artifact text as content rather than HTML", () => {
@@ -80,5 +81,20 @@ describe("ArtifactTabs", () => {
     expect(screen.getByRole("tab", { name: "Implementation decision" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Remediation" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Closure verification" })).toBeTruthy();
+  });
+
+  it("formats artifact timestamps in UTC", () => {
+    render(
+      <ArtifactTabs
+        artifacts={[{
+          id: "artifact-utc", kind: "specification", schema_version: 1, revision: 1,
+          structured_data: {}, rendered_markdown: "# Specification", model: "model",
+          source_snapshot_id: null, created_at: "2026-07-30T12:00:00Z",
+        }]}
+      />,
+    );
+
+    expect(formatTimestamp("2026-07-30T12:00:00Z")).toBe("Jul 30, 2026, 12:00 PM");
+    expect(screen.getByText("Jul 30, 2026, 12:00 PM")).toBeTruthy();
   });
 });

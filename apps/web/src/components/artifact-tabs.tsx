@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import type { Artifact, ArtifactKind, WorkflowType } from "@/lib/types";
+import { formatTimestamp } from "@/lib/workflow-state";
 
 const specificationTabs: { kind: ArtifactKind; label: string }[] = [
   { kind: "specification", label: "Specification" },
@@ -67,7 +68,7 @@ function ArtifactCard({ artifact }: { artifact: Artifact }) {
           <span className="artifact-model">{artifact.model}</span>
         </div>
         <time dateTime={artifact.created_at}>
-          {new Date(artifact.created_at).toLocaleString("en")}
+          {formatTimestamp(artifact.created_at)}
         </time>
       </header>
       <MarkdownLike content={content} />

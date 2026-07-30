@@ -1,4 +1,5 @@
 import type { Phase } from "@/lib/types";
+import { phaseStateTone } from "@/lib/workflow-state";
 
 function safeExternalUrl(value: string | null): string | undefined {
   if (!value) return undefined;
@@ -35,7 +36,7 @@ export function PhaseBoard({ phases }: { phases: Phase[] }) {
                 <li className="phase-card" key={phase.id}>
                   <div className="phase-heading">
                     <span className="phase-ordinal">Phase {phase.ordinal}</span>
-                    <span className={`state-badge phase-${phase.status}`}>{phase.status.replaceAll("_", " ")}</span>
+                    <span className={`state-badge phase-${phase.status} tone-${phaseStateTone(phase.status)}`}>{phase.status.replaceAll("_", " ")}</span>
                   </div>
                   <h3>{phase.title}</h3>
                   <p>{phase.objective}</p>

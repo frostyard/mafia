@@ -9,7 +9,7 @@ vi.mock("next/link", () => ({ default: ({ children }: { children: React.ReactNod
 vi.mock("next/navigation", () => ({ notFound: vi.fn() }));
 vi.mock("@/components/artifact-tabs", () => ({ ArtifactTabs: () => null }));
 vi.mock("@/components/phase-board", () => ({ PhaseBoard: () => null }));
-vi.mock("@/components/refresh-pr-status", () => ({ RefreshPrStatus: () => null }));
+vi.mock("@/components/refresh-pr-status", () => ({ RefreshPrStatus: () => <span>Refresh PR status</span> }));
 vi.mock("@/components/run-agent-shell", () => ({ RunAgentShell: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 vi.mock("@/components/run-cards", () => ({ StateBadge: () => null }));
 vi.mock("@/components/stage-timeline", () => ({ StageTimeline: () => null }));
@@ -113,5 +113,16 @@ describe("RunPage", () => {
       screen.getByRole("heading", { name: "We could not load this run." }),
     ).toBeTruthy();
     expect(notFound).not.toHaveBeenCalled();
+  });
+
+  it("only renders PR refresh while a specification run waits for merge", async () => {
+    vi.mocked(getRun).mockResolvedValue({ ...run, state: "waiting_for_merge" });
+    const waitingForMerge = render(await RunPage({ params: Promise.resolve({ id: "run-1" }) }));
+    expect(screen.getByText("Refresh PR status")).toBeTruthy();
+    waitingForMerge.unmount();
+
+    vi.mocked(getRun).mockResolvedValue({ ...run, state: "pr_open" });
+    render(await RunPage({ params: Promise.resolve({ id: "run-1" }) }));
+    expect(screen.queryByText("Refresh PR status")).toBeNull();
   });
 });

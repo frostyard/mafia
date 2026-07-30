@@ -1,17 +1,10 @@
 import Link from "next/link";
 import type { Run } from "@/lib/types";
-import { runStateTone, type RunState } from "@/lib/workflow-state";
-
-function formatDate(value: string): string {
-  const date = new Date(value);
-  return Number.isNaN(date.valueOf())
-    ? "Date unavailable"
-    : new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(date);
-}
+import { formatTimestamp, runStateTone, type RunState } from "@/lib/workflow-state";
 
 export function StateBadge({ state }: { state: RunState }) {
   return (
-    <span className={`state-badge state-${state}`} data-tone={runStateTone(state)}>
+    <span className={`state-badge state-${state} tone-${runStateTone(state)}`} data-tone={runStateTone(state)}>
       {state.replaceAll("_", " ")}
     </span>
   );
@@ -83,7 +76,7 @@ export function RunCards({ runs }: { runs: Run[] }) {
                   </div>
                 </td>
                 <td><StateBadge state={run.state} /></td>
-                <td><time className="ph-version" dateTime={run.updated_at}>{formatDate(run.updated_at)}</time></td>
+                <td><time className="ph-version" dateTime={run.updated_at}>{formatTimestamp(run.updated_at)}</time></td>
                 <td>
                   <div className="ph-actions">
                     <Link className="button button-small button-secondary" href={`/runs/${run.id}`}>

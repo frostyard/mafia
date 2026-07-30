@@ -22,6 +22,8 @@ export type PhaseState = (typeof PHASE_STATES)[number];
 export type OperationStatus = (typeof OPERATION_STATUSES)[number];
 export type StateTone = "idle" | "working" | "decision" | "success" | "danger" | "external";
 
+const runStateSet = new Set<string>(RUN_STATES);
+
 const decisionStates = new Set<RunState>([
   "awaiting_spec_decision", "awaiting_plan_decision", "ready_for_phase",
   "awaiting_pr_review_decision",
@@ -34,6 +36,18 @@ function assertNever(value: never): never {
 
 export const isDecisionState = (state: RunState) => decisionStates.has(state);
 export const isTerminalState = (state: RunState) => terminalStates.has(state);
+export const isRunState = (state: unknown): state is RunState =>
+  typeof state === "string" && runStateSet.has(state);
+
+export function formatTimestamp(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return "Date unavailable";
+  return new Intl.DateTimeFormat("en-US", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: "UTC",
+  }).format(date);
+}
 
 export function runStateTone(state: RunState): StateTone {
   switch (state) {

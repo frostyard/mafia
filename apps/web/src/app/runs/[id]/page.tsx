@@ -124,10 +124,10 @@ function RunDetailView({
             </div>
             <div className="run-actions">
               <span className="muted">Version {run.version}</span>
-              {!isPullRequestReview ? <RefreshPrStatus runId={run.id} /> : null}
+              {run.state === "waiting_for_merge" ? <RefreshPrStatus runId={run.id} /> : null}
             </div>
           </div>
-          <StageTimeline state={run.state} workflowType={run.workflow_type} />
+          <StageTimeline activity={activity.events} state={run.state} workflowType={run.workflow_type} />
         </section>
 
         {run.failure_message && run.state === "failed" ? (
