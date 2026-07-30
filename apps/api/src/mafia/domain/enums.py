@@ -71,3 +71,11 @@ class PhaseState(StrEnum):
     WAITING_FOR_MERGE = "waiting_for_merge"
     MERGED = "merged"
     FAILED = "failed"
+
+
+class OperationStatus(StrEnum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    TIMED_OUT = "timed_out"
+    CANCELLED = "cancelled"

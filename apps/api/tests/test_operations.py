@@ -568,6 +568,46 @@ async def test_specification_reset_preserves_naturally_completed_state(
 
 
 @pytest.mark.asyncio
+async def test_reset_to_specification_continues_after_draining_nonworking_run(
+    operation_session_factory: OperationSessionFixture,
+) -> None:
+    factory, run_id = operation_session_factory
+    async with factory() as session:
+        run = await session.get(Run, run_id)
+        assert run is not None
+        run.state = RunState.FAILED
+        run.active_spec_revision = 1
+        session.add(
+            Artifact(
+                run_id=run.id,
+                kind=ArtifactKind.SPECIFICATION,
+                revision=1,
+                structured_data={},
+                rendered_markdown="Specification",
+                model=run.primary_model,
+            )
+        )
+        await session.commit()
+
+    started = asyncio.Event()
+
+    async def active_work() -> None:
+        async with operations.active_run_work(run_id):
+            started.set()
+            await asyncio.Event().wait()
+
+    task = asyncio.create_task(active_work())
+    await started.wait()
+
+    reset = await activity.reset_to_specification(run_id)
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert reset.state == RunState.AWAITING_SPEC_DECISION
+    assert operations.has_active_work(run_id) is False
+
+
+@pytest.mark.asyncio
 async def test_reset_to_specification_cancels_active_work(
     operation_session_factory: OperationSessionFixture,
 ) -> None:

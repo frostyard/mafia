@@ -17,7 +17,13 @@ from mafia.db.models import (
     SourceSnapshot,
 )
 from mafia.db.session import SessionFactory
-from mafia.domain.enums import ArtifactKind, DecisionType, PhaseState, RunState
+from mafia.domain.enums import (
+    ArtifactKind,
+    DecisionType,
+    OperationStatus,
+    PhaseState,
+    RunState,
+)
 from mafia.domain.schemas import ActivityEventRead, OperationRead, RunActivity
 from mafia.domain.state_machine import require_transition
 from mafia.services.operations import cancel_active_work, has_active_work
@@ -189,7 +195,7 @@ async def get_run_activity(run_id: str) -> RunActivity:
             id=operation.id,
             phase_id=operation.phase_id,
             operation_type=operation.operation_type,
-            status=operation.status,
+            status=OperationStatus(operation.status),
             model=operation.model,
             attempt=operation.attempt,
             timeout_seconds=operation.timeout_seconds,
@@ -350,7 +356,8 @@ async def reset_to_specification(run_id: str) -> Run:
             )
         if run.state == RunState.AWAITING_SPEC_DECISION:
             return run
-        stop_required = run.state in WORKING_STATES or has_active_work(run_id)
+        was_working = run.state in WORKING_STATES
+        stop_required = was_working or has_active_work(run_id)
 
     if stop_required:
         await _stop_active_work(
@@ -359,7 +366,7 @@ async def reset_to_specification(run_id: str) -> Run:
         )
         async with SessionFactory() as session:
             run = await get_run(session, run_id)
-            if run.state not in WORKING_STATES:
+            if was_working and run.state not in WORKING_STATES:
                 return run
             await transition_run(
                 session,

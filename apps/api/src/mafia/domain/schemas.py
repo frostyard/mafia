@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from mafia.domain.enums import RequirementType, RunState, WorkflowType
+from mafia.domain.enums import OperationStatus, RequirementType, RunState, WorkflowType
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -158,7 +158,7 @@ class OperationRead(BaseModel):
     id: str
     phase_id: str | None
     operation_type: str
-    status: str
+    status: OperationStatus
     model: str | None
     attempt: int
     timeout_seconds: int | None
