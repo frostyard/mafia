@@ -36,6 +36,15 @@ def test_api_workers_rejects_multiple_processes() -> None:
         Settings.model_validate({"api_workers": 2})
 
 
+def test_api_workers_rejects_multiple_processes_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MAFIA_API_WORKERS", "2")
+
+    with pytest.raises(ValidationError):
+        Settings()
+
+
 def test_github_app_requires_complete_configuration(tmp_path: Path) -> None:
     with pytest.raises(ValidationError, match="requires app ID"):
         Settings(github_app_id=123)

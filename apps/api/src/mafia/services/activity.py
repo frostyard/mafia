@@ -313,15 +313,16 @@ async def prepare_retry(run_id: str) -> RunActivity:
         )
         async with SessionFactory() as session:
             run = await get_run(session, run_id)
-            if run.state in WORKING_STATES:
-                await transition_run(
-                    session,
-                    run.id,
-                    RunState.FAILED,
-                    expected_version=run.version,
-                    event_type="run.retry_requested",
-                    payload={"reason": "stalled"},
-                )
+            if run.state not in WORKING_STATES:
+                return await get_run_activity(run_id)
+            await transition_run(
+                session,
+                run.id,
+                RunState.FAILED,
+                expected_version=run.version,
+                event_type="run.retry_requested",
+                payload={"reason": "stalled"},
+            )
     elif has_active_work(run_id):
         raise RunControlError("The previous workflow attempt is still stopping")
     async with SessionFactory() as session:
@@ -358,14 +359,15 @@ async def reset_to_specification(run_id: str) -> Run:
         )
         async with SessionFactory() as session:
             run = await get_run(session, run_id)
-            if run.state in WORKING_STATES:
-                await transition_run(
-                    session,
-                    run.id,
-                    RunState.CANCELLED,
-                    expected_version=run.version,
-                    event_type="specification.reset_cancel_requested",
-                )
+            if run.state not in WORKING_STATES:
+                return run
+            await transition_run(
+                session,
+                run.id,
+                RunState.CANCELLED,
+                expected_version=run.version,
+                event_type="specification.reset_cancel_requested",
+            )
 
     async with SessionFactory() as session:
         run = await get_run(session, run_id)

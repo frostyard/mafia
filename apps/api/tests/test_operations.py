@@ -250,6 +250,45 @@ async def test_cancel_timeout_keeps_working_state(
 
 
 @pytest.mark.asyncio
+async def test_cancel_preserves_naturally_completed_state(
+    operation_session_factory: OperationSessionFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, run_id = operation_session_factory
+    async with factory() as session:
+        run = await session.get(Run, run_id)
+        assert run is not None
+        expected_version = run.version + 1
+
+    async def finish_work(run_id: str) -> None:
+        async with factory() as session:
+            run = await session.get(Run, run_id)
+            assert run is not None
+            await activity.transition_run(
+                session,
+                run.id,
+                RunState.FAILED,
+                expected_version=run.version,
+                event_type="run.naturally_completed",
+            )
+
+    monkeypatch.setattr(activity, "_wait_for_active_work", finish_work)
+
+    result = await activity.cancel_run(run_id)
+
+    assert result.state == RunState.FAILED
+    assert result.version == expected_version
+    async with factory() as session:
+        cancel_event = await session.scalar(
+            select(AuditEvent).where(
+                AuditEvent.run_id == run_id,
+                AuditEvent.event_type == "run.cancel_requested",
+            )
+        )
+    assert cancel_event is None
+
+
+@pytest.mark.asyncio
 async def test_stalled_retry_timeout_keeps_working_state(
     operation_session_factory: OperationSessionFixture,
     monkeypatch: pytest.MonkeyPatch,
@@ -286,6 +325,62 @@ async def test_stalled_retry_timeout_keeps_working_state(
         run = await session.get(Run, run_id)
     assert run is not None
     assert run.state == RunState.GENERATING_PLAN
+
+
+@pytest.mark.asyncio
+async def test_stalled_retry_preserves_naturally_completed_state_without_retry_ready_event(
+    operation_session_factory: OperationSessionFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, run_id = operation_session_factory
+    stale = datetime.now(UTC) - timedelta(minutes=10)
+    async with factory() as session:
+        run = await session.get(Run, run_id)
+        assert run is not None
+        expected_version = run.version + 1
+        session.add(
+            Operation(
+                idempotency_key=f"{run_id}:-:model.plan_generation:natural-completion",
+                run_id=run_id,
+                operation_type="model.plan_generation",
+                request_hash="b" * 64,
+                status="running",
+                model="gpt-5.6-sol",
+                attempt=1,
+                timeout_seconds=900,
+                heartbeat_at=stale,
+                progress_at=stale,
+                detail={},
+            )
+        )
+        await session.commit()
+
+    async def finish_work(run_id: str) -> None:
+        async with factory() as session:
+            run = await session.get(Run, run_id)
+            assert run is not None
+            await activity.transition_run(
+                session,
+                run.id,
+                RunState.FAILED,
+                expected_version=run.version,
+                event_type="run.naturally_completed",
+            )
+
+    monkeypatch.setattr(activity, "_wait_for_active_work", finish_work)
+
+    result = await activity.prepare_retry(run_id)
+
+    assert result.state == RunState.FAILED
+    assert result.version == expected_version
+    async with factory() as session:
+        retry_ready = await session.scalar(
+            select(AuditEvent).where(
+                AuditEvent.run_id == run_id,
+                AuditEvent.event_type == "run.retry_ready",
+            )
+        )
+    assert retry_ready is None
 
 
 @pytest.mark.asyncio
@@ -417,6 +512,59 @@ async def test_specification_reset_timeout_keeps_active_thread_and_state(
     assert run is not None
     assert run.state == RunState.GENERATING_PLAN
     assert run.thread_id == original_thread_id
+
+
+@pytest.mark.asyncio
+async def test_specification_reset_preserves_naturally_completed_state(
+    operation_session_factory: OperationSessionFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, run_id = operation_session_factory
+    async with factory() as session:
+        run = await session.get(Run, run_id)
+        assert run is not None
+        run.active_spec_revision = 1
+        original_thread_id = run.thread_id
+        expected_version = run.version + 1
+        session.add(
+            Artifact(
+                run_id=run.id,
+                kind=ArtifactKind.SPECIFICATION,
+                revision=1,
+                structured_data={},
+                rendered_markdown="Specification",
+                model=run.primary_model,
+            )
+        )
+        await session.commit()
+
+    async def finish_work(run_id: str) -> None:
+        async with factory() as session:
+            run = await session.get(Run, run_id)
+            assert run is not None
+            await activity.transition_run(
+                session,
+                run.id,
+                RunState.FAILED,
+                expected_version=run.version,
+                event_type="run.naturally_completed",
+            )
+
+    monkeypatch.setattr(activity, "_wait_for_active_work", finish_work)
+
+    reset = await activity.reset_to_specification(run_id)
+
+    assert reset.state == RunState.FAILED
+    assert reset.version == expected_version
+    assert reset.thread_id == original_thread_id
+    async with factory() as session:
+        reset_event = await session.scalar(
+            select(AuditEvent).where(
+                AuditEvent.run_id == run_id,
+                AuditEvent.event_type == "specification.reset",
+            )
+        )
+    assert reset_event is None
 
 
 @pytest.mark.asyncio
