@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { Run } from "@/lib/types";
+import { runStateTone, type RunState } from "@/lib/workflow-state";
 
 function formatDate(value: string): string {
   const date = new Date(value);
@@ -8,8 +9,12 @@ function formatDate(value: string): string {
     : new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(date);
 }
 
-export function StateBadge({ state }: { state: string }) {
-  return <span className={`state-badge state-${state}`}>{state.replaceAll("_", " ")}</span>;
+export function StateBadge({ state }: { state: RunState }) {
+  return (
+    <span className={`state-badge state-${state}`} data-tone={runStateTone(state)}>
+      {state.replaceAll("_", " ")}
+    </span>
+  );
 }
 
 export function RunCards({ runs }: { runs: Run[] }) {

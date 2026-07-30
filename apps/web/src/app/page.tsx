@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { RunCards } from "@/components/run-cards";
 import { getRuns } from "@/lib/api";
+import { isDecisionState, isTerminalState } from "@/lib/workflow-state";
 
 export default async function DashboardPage() {
   let runs;
@@ -8,9 +9,9 @@ export default async function DashboardPage() {
     runs = await getRuns();
   } catch {}
   const activeRuns = runs?.filter((run) =>
-    !["completed", "failed", "cancelled"].includes(run.state),
+    !isTerminalState(run.state),
   ).length ?? 0;
-  const decisions = runs?.filter((run) => run.state.includes("decision")).length ?? 0;
+  const decisions = runs?.filter((run) => isDecisionState(run.state)).length ?? 0;
   const completed = runs?.filter((run) => run.state === "completed").length ?? 0;
 
   return (

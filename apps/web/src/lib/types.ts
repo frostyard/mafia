@@ -1,3 +1,5 @@
+import type { OperationStatus, PhaseState, RunState } from "@/lib/workflow-state";
+
 export type RequirementType = "issue" | "text";
 export type WorkflowType = "specification" | "pull_request_review";
 
@@ -40,7 +42,7 @@ export interface Run {
   primary_model: string;
   reviewer_model: string;
   thread_id: string;
-  state: string;
+  state: RunState;
   version: number;
   active_spec_revision: number | null;
   active_plan_revision: number | null;
@@ -84,7 +86,7 @@ export interface Phase {
   objective: string;
   dependencies: number[];
   details: Record<string, unknown>;
-  status: string;
+  status: PhaseState;
   plan_revision: number;
   source_sha: string;
   branch_name: string | null;
@@ -132,7 +134,7 @@ export interface Operation {
   id: string;
   phase_id: string | null;
   operation_type: string;
-  status: string;
+  status: OperationStatus;
   model: string | null;
   attempt: number;
   timeout_seconds: number | null;

@@ -26,7 +26,7 @@ function activity(
   };
 }
 
-function artifactOperation(status: string): Operation {
+function artifactOperation(status: Operation["status"]): Operation {
   return {
     id: "operation-1",
     phase_id: null,

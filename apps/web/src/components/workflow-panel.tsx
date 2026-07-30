@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import { resetRunToSpecification } from "@/lib/api";
 import type { WorkflowType } from "@/lib/types";
 import { startOrRestoreWorkflow } from "@/lib/workflow-control";
+import { isDecisionState, type RunState } from "@/lib/workflow-state";
 
 interface DecisionProps {
   kind: "artifact" | "phase" | "pull_request_review";
@@ -167,7 +168,7 @@ function WorkflowControls({
   activeSpecRevision: number | null;
   decisionVisible: boolean;
   runId: string;
-  runState: string;
+  runState: RunState;
   threadId: string;
   workflowType: WorkflowType;
 }) {
@@ -212,11 +213,7 @@ function WorkflowControls({
     }
   }
 
-  const waitingForDecision =
-    runState === "awaiting_spec_decision" ||
-    runState === "awaiting_plan_decision" ||
-    runState === "ready_for_phase" ||
-    runState === "awaiting_pr_review_decision";
+  const waitingForDecision = isDecisionState(runState);
   const canStart = runState === "intake" || runState === "failed";
   const showButton = canStart || (waitingForDecision && !decisionVisible);
   const buttonLabel = waitingForDecision
@@ -313,7 +310,7 @@ export function WorkflowPanel({
 }: {
   activeSpecRevision: number | null;
   runId: string;
-  runState: string;
+  runState: RunState;
   threadId: string;
   workflowType: WorkflowType;
 }) {
