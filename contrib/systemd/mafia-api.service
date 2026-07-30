@@ -10,6 +10,7 @@ User=mafia
 Group=mafia
 WorkingDirectory=/opt/mafia/current
 Environment=HOME=/var/lib/mafia
+Environment=MAFIA_DATA_DIR=/var/lib/mafia
 EnvironmentFile=/etc/mafia/mafia.env
 ExecStart=/opt/mafia/current/bin/api
 Restart=on-failure
