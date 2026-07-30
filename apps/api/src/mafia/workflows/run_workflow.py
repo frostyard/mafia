@@ -1323,11 +1323,29 @@ class RunWorkflowExecutor(Executor):
                     expected_version=run.version,
                     event_type="run.cancelled",
                 )
-            await ctx.yield_output("Run cancelled.")
-            return
-        from mafia.services.execution import execute_phase
+                await ctx.yield_output("Run cancelled.")
+                return
+        from mafia.services.execution import PhaseExecutionError, execute_phase
 
-        await execute_phase(original_request.run_id, original_request.phase_id, ctx)
+        try:
+            await execute_phase(original_request.run_id, original_request.phase_id, ctx)
+        except PhaseExecutionError as error:
+            if str(error) != "Phase is not ready for execution":
+                raise
+            async with SessionFactory() as session:
+                run = await get_run(session, original_request.run_id)
+                phase = await session.get(Phase, original_request.phase_id)
+                if (
+                    phase is None
+                    or phase.run_id != run.id
+                    or run.state != RunState.READY_FOR_PHASE
+                    or phase.status != PhaseState.READY
+                ):
+                    await ctx.yield_output(
+                        "Ignored a stale phase decision because the phase is no longer ready."
+                    )
+                    return
+            raise
 
 
 def build_run_workflow(
