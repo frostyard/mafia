@@ -600,9 +600,10 @@ class DevContainerEnvironment(BubblewrapSandbox):
 async def create_execution_environment(
     worktree: Path,
     *,
+    execution_mode: Literal["isolated", "host"] = "isolated",
     progress: ProgressCallback | None = None,
 ) -> ExecutionEnvironment:
-    if get_settings().execution_mode == "host":
+    if execution_mode == "host":
         environment = HostExecutionEnvironment(worktree)
         if progress is not None:
             await progress({"step": "ready", **environment.description()})

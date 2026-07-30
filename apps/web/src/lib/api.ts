@@ -2,6 +2,7 @@ import type {
   ApiError,
   Evidence,
   ModelAvailability,
+  Project,
   Run,
   RunActivity,
   RunCreate,
@@ -58,6 +59,36 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function getRuns(): Promise<Run[]> {
   return request<Run[]>("/api/runs");
+}
+
+export function getProjects(): Promise<Project[]> {
+  return request<Project[]>("/api/projects");
+}
+
+export function getProject(id: string): Promise<Project> {
+  return request<Project>(`/api/projects/${encodeURIComponent(id)}`);
+}
+
+export function createProject(repository: string): Promise<Project> {
+  return request<Project>("/api/projects", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ repository }),
+  });
+}
+
+export function updateProjectConfiguration(
+  id: string,
+  content: string,
+): Promise<Project> {
+  return request<Project>(
+    `/api/projects/${encodeURIComponent(id)}/configuration`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content }),
+    },
+  );
 }
 
 export function getRun(id: string): Promise<RunDetail> {

@@ -15,8 +15,8 @@ Create a run with an `owner/repository`, a GitHub issue number or URL or written
 4. Send the plan to the configured reviewer model.
 5. Have the primary model adjudicate every finding and produce a revised, pull request-sized phased plan.
 6. Pause for the operator to accept or refine the reviewed plan.
-7. Require explicit approval before executing each phase.
-8. Validate the implementation and freeze its exact staged diff.
+7. Resolve deterministic project validation before offering phase approval.
+8. Run the frozen validation commands, validate the implementation, and freeze its exact staged diff.
 9. Send that candidate to the competing model for one comprehensive implementation review.
 10. Have the primary model adjudicate every finding and perform one remediation when needed.
 11. Have the competing model verify only the remediation's closure.
@@ -29,6 +29,8 @@ Create a run with an `owner/repository`, a GitHub issue number or URL or written
 </figure>
 
 Workflow interrupts, checkpoints, artifacts, source evidence, approvals, operations, and execution state persist under `data/`. On startup, mafia reconciles interrupted work and existing pull requests before retrying side effects.
+
+The implementation model's targeted checks are supplemental. Repository or host-owned `.mafia.toml` commands form the mechanical gate and run again after remediation.
 
 ## Bounded implementation review
 

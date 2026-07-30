@@ -22,6 +22,7 @@ from mafia.domain.enums import (
     WorkflowType,
 )
 from mafia.services import operations
+from mafia.services.commands import CommandResult
 from mafia.services.pr_reviews import PullRequestReviewService
 from mafia.workflows import run_workflow
 from sqlalchemy import select
@@ -491,6 +492,18 @@ async def test_pull_request_review_runs_both_models_and_awaits_post_decision(
         return snapshot, context
 
     monkeypatch.setattr(run_workflow, "capture_pull_request_snapshot", capture)
+
+    async def missing_repository_configuration(
+        *args: object, **kwargs: object
+    ) -> CommandResult:
+        return CommandResult(
+            argv=("git",),
+            returncode=128,
+            stdout="",
+            stderr="fatal: path '.mafia.toml' does not exist in base",
+        )
+
+    monkeypatch.setattr(run_workflow, "run_command", missing_repository_configuration)
     service = FakePullRequestReviewService(workflow_session_factory)
     context = PullRequestReviewContext()
     executor = run_workflow.RunWorkflowExecutor(

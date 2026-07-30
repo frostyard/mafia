@@ -44,6 +44,33 @@ class RepositoryRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ProjectCreate(BaseModel):
+    repository: str = Field(min_length=3, max_length=500)
+
+
+class ProjectConfigurationUpdate(BaseModel):
+    content: str = Field(min_length=1, max_length=100_000)
+
+
+class ValidationCommandRead(BaseModel):
+    name: str
+    run: str
+    working_directory: str
+    timeout_seconds: int
+
+
+class ProjectRead(BaseModel):
+    id: str
+    owner: str
+    name: str
+    remote_url: str
+    default_branch: str | None
+    configured: bool
+    configuration_content: str
+    execution_mode: Literal["isolated", "host"]
+    validation_commands: list[ValidationCommandRead]
+
+
 class RunRead(BaseModel):
     id: str
     repository: RepositoryRead
@@ -60,6 +87,7 @@ class RunRead(BaseModel):
     active_spec_revision: int | None
     active_plan_revision: int | None
     active_review_revision: int | None
+    project_configuration: dict[str, Any] | None
     failure_code: str | None
     failure_message: str | None
     created_at: datetime
@@ -103,6 +131,7 @@ class PhaseRead(BaseModel):
     verification_attempts: int
     candidate_base_sha: str | None
     candidate_diff_hash: str | None
+    project_configuration: dict[str, Any] | None
 
     model_config = {"from_attributes": True}
 

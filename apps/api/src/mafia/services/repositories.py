@@ -55,7 +55,11 @@ def parse_repository(value: str) -> RepositoryIdentity:
 
     normalized = normalized.removesuffix(".git").strip("/")
     parts = normalized.split("/")
-    if len(parts) != 2 or not all(SLUG_PATTERN.fullmatch(part) for part in parts):
+    if (
+        len(parts) != 2
+        or any(part in {".", ".."} for part in parts)
+        or not all(SLUG_PATTERN.fullmatch(part) for part in parts)
+    ):
         raise InvalidRepositoryError("Repository must be owner/name or a GitHub repository URL")
     return require_repository_owner(
         RepositoryIdentity(owner=parts[0], name=parts[1])
@@ -77,3 +81,19 @@ async def get_or_create_repository(session: AsyncSession, identity: RepositoryId
     session.add(repository)
     await session.flush()
     return repository
+
+
+async def get_repository(session: AsyncSession, repository_id: str) -> Repository:
+    repository = await session.get(Repository, repository_id)
+    if repository is None:
+        raise LookupError(repository_id)
+    require_repository_owner(RepositoryIdentity(repository.owner, repository.name))
+    return repository
+
+
+async def list_repositories(session: AsyncSession) -> list[Repository]:
+    statement = select(Repository)
+    repository_owner = get_settings().repository_owner
+    if repository_owner is not None:
+        statement = statement.where(Repository.owner.ilike(repository_owner))
+    return list(await session.scalars(statement.order_by(Repository.owner, Repository.name)))

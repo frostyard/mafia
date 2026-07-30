@@ -1,14 +1,18 @@
 # Execution environments
 
-`MAFIA_EXECUTION_MODE=isolated` is the default. It selects a Dev Container when the repository provides
-one and otherwise uses bubblewrap.
+New projects use isolated execution by default. Select isolated or host mode from the project's settings in
+the web interface. mafia freezes that host-owned choice when a phase or pull request validation starts.
+Repository `.mafia.toml` files cannot select execution.
 
-Set `MAFIA_EXECUTION_MODE=host` for a trusted local deployment that should run implementation and
-validation commands directly on the host from the phase worktree. Host mode skips Dev Container discovery,
+Host mode is for a trusted project whose implementation and validation commands may run directly on the host
+from the worktree. Host mode skips Dev Container discovery,
 container-engine setup, bubblewrap, network isolation, and process isolation. File tools remain confined to
 the worktree, and command timeouts, output limits, cancellation, diff validation, and host-owned Git/GitHub
 operations still apply. Shell commands can nevertheless access the host filesystem, network, and programs;
 do not use host mode with untrusted requirements or repositories.
+
+See [Project configuration](project-configuration.md) for host configuration storage and validation
+precedence.
 
 ## Isolated mode
 

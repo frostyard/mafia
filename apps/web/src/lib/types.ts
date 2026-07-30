@@ -10,6 +10,25 @@ export interface Repository {
   last_fetched_sha: string | null;
 }
 
+export interface ValidationCommand {
+  name: string;
+  run: string;
+  working_directory: string;
+  timeout_seconds: number;
+}
+
+export interface Project {
+  id: string;
+  owner: string;
+  name: string;
+  remote_url: string;
+  default_branch: string | null;
+  configured: boolean;
+  configuration_content: string;
+  execution_mode: "isolated" | "host";
+  validation_commands: ValidationCommand[];
+}
+
 export interface Run {
   id: string;
   repository: Repository;
@@ -26,6 +45,7 @@ export interface Run {
   active_spec_revision: number | null;
   active_plan_revision: number | null;
   active_review_revision: number | null;
+  project_configuration: Record<string, unknown> | null;
   failure_code: string | null;
   failure_message: string | null;
   created_at: string;
@@ -78,6 +98,7 @@ export interface Phase {
   verification_attempts: number;
   candidate_base_sha: string | null;
   candidate_diff_hash: string | null;
+  project_configuration: Record<string, unknown> | null;
 }
 
 export interface Evidence {

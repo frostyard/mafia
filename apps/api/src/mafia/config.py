@@ -15,7 +15,6 @@ class Settings(BaseSettings):
     command_timeout_seconds: float = Field(default=120.0, gt=0)
     command_output_limit: int = Field(default=1_000_000, gt=0)
     sandbox_process_limit: int = Field(default=128, ge=16, le=1024)
-    execution_mode: Literal["isolated", "host"] = "isolated"
     container_engine: Literal["auto", "docker", "podman"] = "auto"
     devcontainer_cli_path: str = "devcontainer"
     devcontainer_policy: Literal["strict", "allow-anything"] = "strict"
@@ -188,12 +187,17 @@ class Settings(BaseSettings):
     def checkpoints_dir(self) -> Path:
         return self.data_dir / "checkpoints"
 
+    @property
+    def projects_dir(self) -> Path:
+        return self.data_dir / "projects"
+
     def ensure_directories(self) -> None:
         for path in (
             self.data_dir,
             self.repositories_dir,
             self.worktrees_dir,
             self.checkpoints_dir,
+            self.projects_dir,
         ):
             path.mkdir(parents=True, exist_ok=True, mode=0o700)
 

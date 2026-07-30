@@ -31,6 +31,8 @@ Open `http://127.0.0.1:3000`, create a run, and start the workflow.
 - [Workflow lifecycle](docs/workflow.md) — artifacts, approvals, pull requests, durability, and recovery.
 - [Execution environments](docs/execution-environments.md) — Dev Containers, engines, networking, policy,
   resource limits, and bubblewrap fallback.
+- [Project configuration](docs/project-configuration.md) — deterministic validation, host fallback, and
+  per-project execution settings.
 - [Development](docs/development.md) — prerequisites, local services, runtime data, and validation commands.
 - [Deployment bundle](docs/deployment.md) — release packaging, installation, configuration, and production
   processes.

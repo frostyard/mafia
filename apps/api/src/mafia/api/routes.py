@@ -3,17 +3,21 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from mafia.agents.copilot import CopilotAgentService
 from mafia.config import get_settings
-from mafia.db.models import Evidence, SourceSnapshot
+from mafia.db.models import Evidence, Repository, SourceSnapshot
 from mafia.db.session import get_session
 from mafia.domain.schemas import (
     EvidenceRead,
     ModelAvailability,
     ModelPair,
+    ProjectConfigurationUpdate,
+    ProjectCreate,
+    ProjectRead,
     Readiness,
     RunActivity,
     RunCreate,
     RunDetail,
     RunRead,
+    ValidationCommandRead,
 )
 from mafia.services.activity import (
     RunControlError,
@@ -25,7 +29,19 @@ from mafia.services.activity import (
 from mafia.services.lifecycle import reconcile_run
 from mafia.services.operator import bind_request_operator
 from mafia.services.prerequisites import readiness
-from mafia.services.repositories import InvalidRepositoryError
+from mafia.services.project_config import (
+    ProjectConfigurationError,
+    read_host_project_configuration,
+    write_host_project_configuration,
+)
+from mafia.services.repositories import (
+    InvalidRepositoryError,
+    RepositoryIdentity,
+    get_or_create_repository,
+    get_repository,
+    list_repositories,
+    parse_repository,
+)
 from mafia.services.runs import (
     ConcurrentUpdateError,
     RunNotFoundError,
@@ -40,6 +56,32 @@ from sqlalchemy.ext.asyncio import AsyncSession
 router = APIRouter()
 Session = Annotated[AsyncSession, Depends(get_session)]
 Operator = Annotated[None, Depends(bind_request_operator)]
+
+
+def _project_read(repository: Repository) -> ProjectRead:
+    owner = repository.owner
+    name = repository.name
+    configuration, content, configured = read_host_project_configuration(
+        RepositoryIdentity(owner, name)
+    )
+    return ProjectRead(
+        id=repository.id,
+        owner=owner,
+        name=name,
+        remote_url=repository.remote_url,
+        default_branch=repository.default_branch,
+        configured=configured,
+        configuration_content=content,
+        execution_mode=configuration.execution.mode,
+        validation_commands=(
+            [
+                ValidationCommandRead.model_validate(command.model_dump())
+                for command in configuration.validation.commands
+            ]
+            if configuration.validation is not None
+            else []
+        ),
+    )
 
 
 @router.get("/healthz", status_code=status.HTTP_204_NO_CONTENT)
@@ -71,6 +113,67 @@ async def models_index() -> ModelAvailability:
 @router.get("/api/runs", response_model=list[RunRead])
 async def runs_index(session: Session) -> list[RunRead]:
     return [RunRead.model_validate(run) for run in await list_runs(session)]
+
+
+@router.get("/api/projects", response_model=list[ProjectRead])
+async def projects_index(session: Session) -> list[ProjectRead]:
+    return [_project_read(project) for project in await list_repositories(session)]
+
+
+@router.post("/api/projects", response_model=ProjectRead, status_code=status.HTTP_201_CREATED)
+async def projects_create(
+    request: ProjectCreate,
+    session: Session,
+    _: Operator,
+) -> ProjectRead:
+    try:
+        project = await get_or_create_repository(
+            session, parse_repository(request.repository)
+        )
+        await session.commit()
+    except InvalidRepositoryError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_repository", "message": str(error)},
+        ) from error
+    return _project_read(project)
+
+
+@router.get("/api/projects/{project_id}", response_model=ProjectRead)
+async def projects_show(project_id: str, session: Session) -> ProjectRead:
+    try:
+        return _project_read(await get_repository(session, project_id))
+    except LookupError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "project_not_found", "message": project_id},
+        ) from error
+
+
+@router.put("/api/projects/{project_id}/configuration", response_model=ProjectRead)
+async def projects_update_configuration(
+    project_id: str,
+    request: ProjectConfigurationUpdate,
+    session: Session,
+    _: Operator,
+) -> ProjectRead:
+    try:
+        project = await get_repository(session, project_id)
+        write_host_project_configuration(
+            RepositoryIdentity(project.owner, project.name),
+            request.content,
+        )
+    except LookupError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "project_not_found", "message": project_id},
+        ) from error
+    except ProjectConfigurationError as error:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_project_configuration", "message": str(error)},
+        ) from error
+    return _project_read(project)
 
 
 @router.post("/api/runs", response_model=RunRead, status_code=status.HTTP_201_CREATED)

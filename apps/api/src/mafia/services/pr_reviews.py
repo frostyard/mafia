@@ -232,6 +232,28 @@ def pull_request_tools(reader: PullRequestReader) -> list[Any]:
     ]
 
 
+def _validation_markdown(context: dict[str, Any]) -> str:
+    validation_value = context.get("deterministic_validation")
+    if not isinstance(validation_value, dict):
+        return ""
+    validation = cast(dict[str, object], validation_value)
+    status = str(validation.get("status", "unknown"))
+    source = str(validation.get("source", "missing"))
+    commands_value = validation.get("commands", [])
+    command_lines: list[str] = []
+    if isinstance(commands_value, list):
+        for item_value in cast(list[object], commands_value):
+            if isinstance(item_value, dict):
+                item = cast(dict[str, object], item_value)
+                command_lines.append(f"- `{item.get('command', '')}`: passed")
+    commands = "\n".join(command_lines)
+    return (
+        "\n\n## Deterministic validation\n\n"
+        f"Status: **{status}**. Configuration source: `{source}`."
+        + (f"\n\n{commands}" if commands else "")
+    )
+
+
 async def validate_pull_request_review(
     review: PullRequestReview,
     reader: PullRequestReader,
@@ -556,7 +578,10 @@ class PullRequestReviewService:
                     run=run,
                     kind=ArtifactKind.PULL_REQUEST_REVIEW_CONSOLIDATED,
                     data=consolidated,
-                    markdown=pull_request_review_markdown(consolidated),
+                    markdown=(
+                        pull_request_review_markdown(consolidated)
+                        + _validation_markdown(context)
+                    ),
                     model=run.primary_model,
                     snapshot=snapshot,
                 )

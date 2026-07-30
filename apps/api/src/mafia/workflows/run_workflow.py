@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -33,11 +34,20 @@ from mafia.domain.enums import (
 )
 from mafia.domain.state_machine import ALLOWED_TRANSITIONS
 from mafia.services.artifacts import ArtifactGenerator
+from mafia.services.commands import run_command
+from mafia.services.devcontainers import create_execution_environment
 from mafia.services.github import post_pull_request_comment
 from mafia.services.operations import active_run_work, tracked_operation
 from mafia.services.pr_reviews import PullRequestReviewService
+from mafia.services.project_config import (
+    ProjectConfigurationError,
+    resolve_project_configuration_content,
+    run_deterministic_validation,
+    source_validation_status,
+)
 from mafia.services.repositories import RepositoryIdentity
 from mafia.services.runs import get_run, transition_run
+from mafia.services.sandbox import ExecutionEnvironment
 from mafia.services.source import capture_pull_request_snapshot, capture_source_snapshot
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -47,6 +57,22 @@ logger = logging.getLogger(__name__)
 
 class WorkflowStreamInterruptedError(RuntimeError):
     pass
+
+
+async def restore_analysis_worktree(
+    environment: ExecutionEnvironment,
+    worktree: Path,
+    head_sha: str,
+) -> None:
+    try:
+        await environment.close()
+    finally:
+        try:
+            await run_command(
+                ("git", "-C", str(worktree), "reset", "--hard", head_sha)
+            )
+        finally:
+            await run_command(("git", "-C", str(worktree), "clean", "-fdx"))
 
 
 class RunWorkflowExecutor(Executor):
@@ -360,6 +386,65 @@ class RunWorkflowExecutor(Executor):
                         "changed_files": context.get("changed_files"),
                     }
                 )
+        identity = RepositoryIdentity(run.repository.owner, run.repository.name)
+        base_sha = context.get("base_sha")
+        if not isinstance(base_sha, str):
+            raise RuntimeError("Pull-request snapshot has no base SHA")
+        base_configuration = await run_command(
+            (
+                "git",
+                "-C",
+                snapshot.worktree_path,
+                "show",
+                f"{base_sha}:.mafia.toml",
+            ),
+            check=False,
+        )
+        if (
+            base_configuration.returncode != 0
+            and "does not exist in" not in base_configuration.stderr
+        ):
+            raise ProjectConfigurationError(
+                f"Could not read repository .mafia.toml at {base_sha}: "
+                f"{base_configuration.stderr.strip()[-1_000:]}"
+            )
+        project_configuration = resolve_project_configuration_content(
+            identity,
+            base_configuration.stdout if base_configuration.returncode == 0 else None,
+        )
+        validation_results: list[dict[str, object]] = []
+        if project_configuration.validation_commands:
+            environment = await create_execution_environment(
+                Path(snapshot.worktree_path),
+                execution_mode=project_configuration.execution_mode,
+            )
+            try:
+                validation_results = await run_deterministic_validation(
+                    environment,
+                    project_configuration,
+                    run_id=run.id,
+                    stage=f"pull-request-{run.pull_request_number}",
+                )
+            finally:
+                await restore_analysis_worktree(
+                    environment,
+                    Path(snapshot.worktree_path),
+                    snapshot.git_sha,
+                )
+        context["deterministic_validation"] = {
+            "status": "passed" if validation_results else "not_configured",
+            "source": project_configuration.validation_source,
+            "configuration_sha256": project_configuration.validation_sha256,
+            "commands": validation_results,
+        }
+        async with SessionFactory() as session:
+            current_run = await get_run(session, run_id)
+            current_run.project_configuration = project_configuration.snapshot()
+            current_snapshot = await session.get(SourceSnapshot, snapshot.id)
+            if current_snapshot is None:
+                raise LookupError(snapshot.id)
+            current_snapshot.issue_data = context
+            await session.commit()
         run = await self._transition_state(
             run_id,
             RunState.REVIEWING_PR,
@@ -1162,6 +1247,29 @@ class RunWorkflowExecutor(Executor):
         phase: Phase,
         ctx: WorkflowContext[Any, str],
     ) -> None:
+        async with SessionFactory() as session:
+            run = await get_run(session, phase.run_id)
+            identity = RepositoryIdentity(run.repository.owner, run.repository.name)
+            try:
+                validation_available, validation_source = (
+                    await source_validation_status(
+                        identity,
+                        run.repository.cache_path,
+                        phase.source_sha,
+                    )
+                )
+            except ProjectConfigurationError as error:
+                await ctx.yield_output(
+                    f"Phase {phase.ordinal} cannot start: {error}"
+                )
+                return
+        if not validation_available:
+            await ctx.yield_output(
+                f"Phase {phase.ordinal} cannot start until deterministic validation is "
+                f"configured for {identity.slug}. Add .mafia.toml to the repository or "
+                "configure the project in mafia."
+            )
+            return
         await ctx.request_info(
             PhaseDecisionRequest(
                 run_id=phase.run_id,
@@ -1169,7 +1277,10 @@ class RunWorkflowExecutor(Executor):
                 ordinal=phase.ordinal,
                 title=phase.title,
                 objective=phase.objective,
-                prompt=f"Start phase {phase.ordinal}: {phase.title}?",
+                prompt=(
+                    f"Start phase {phase.ordinal}: {phase.title}? "
+                    f"Deterministic validation source: {validation_source}."
+                ),
             ),
             dict,
             request_id=f"phase-{phase.id}",

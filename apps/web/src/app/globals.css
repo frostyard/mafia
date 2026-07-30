@@ -278,6 +278,71 @@ code {
   padding: clamp(22px, 4vw, 34px);
 }
 
+.project-layout,
+.project-settings {
+  width: min(900px, 100%);
+}
+
+.project-create,
+.project-settings {
+  padding: clamp(22px, 4vw, 34px);
+}
+
+.project-create {
+  display: flex;
+  align-items: end;
+  margin-bottom: 18px;
+  gap: 12px;
+}
+
+.project-create .field {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 12px;
+}
+
+.project-card {
+  padding: 22px;
+  text-decoration: none;
+}
+
+.project-card h2,
+.project-command-heading h2 {
+  margin: 5px 0 8px;
+}
+
+.project-command-heading,
+.project-command-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.project-command {
+  margin: 0 0 16px;
+  padding: 18px;
+  border: 1px solid var(--line);
+}
+
+.project-command-row > .field {
+  flex: 1;
+}
+
+.project-toml {
+  margin: 22px 0;
+}
+
+.project-toml summary {
+  margin-bottom: 14px;
+  color: var(--link);
+  font-weight: 700;
+}
+
 .form-heading {
   padding-bottom: 22px;
   border-bottom: 1px solid var(--line);
