@@ -1,17 +1,28 @@
 import type { Evidence } from "@/lib/types";
 
-export function EvidenceDrawer({ evidence }: { evidence: Evidence[] }) {
-  if (!evidence.length) return null;
+export function EvidenceDrawer({
+  evidence,
+  error,
+}: {
+  evidence: Evidence[];
+  error?: string;
+}) {
+  if (!evidence.length && !error) return null;
   return (
-    <details className="ph-card artifact-data">
-      <summary>Source evidence ({evidence.length})</summary>
+    <details className="ph-card artifact-data" open={Boolean(error)}>
+      <summary>
+        {error
+          ? `Source evidence unavailable (${evidence.length})`
+          : `Source evidence (${evidence.length})`}
+      </summary>
+      {error ? <p className="form-alert" role="alert">{error}</p> : null}
       <div className="artifact-list">
         {evidence.map((item) => (
           <article className="artifact-card" key={item.id}>
             <strong>
               {item.path_or_url}
-              {item.line_start
-                ? `:${item.line_start}${item.line_end !== item.line_start ? `-${item.line_end}` : ""}`
+              {item.line_start !== null
+                ? `:${item.line_start}${item.line_end != null && item.line_end !== item.line_start ? `-${item.line_end}` : ""}`
                 : ""}
             </strong>
             <p className="muted">

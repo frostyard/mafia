@@ -40,6 +40,8 @@ pnpm-debug.log*
 # Runtime state
 data/*
 !data/.gitkeep
+.worktrees/
+.superpowers/
 *.db
 *.db-shm
 *.db-wal

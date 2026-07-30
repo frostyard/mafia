@@ -41,6 +41,9 @@ Keep `MAFIA_DATA_DIR` on persistent storage. It contains the SQLite database,
 checkpoints, repository caches, analysis worktrees, and implementation
 worktrees.
 
+Execution mode is configured per project in the host project configuration;
+deployment environment files do not select it. See `docs/project-configuration.md`.
+
 ## Run
 
 Start the API and web server as separate processes:
@@ -69,6 +72,12 @@ Configure the listeners with `MAFIA_WEB_HOST`, `MAFIA_WEB_PORT`,
 address the FastAPI listener. The default values are suitable when both
 processes run on the same host.
 
+MAFIA supports exactly one API worker (`MAFIA_API_WORKERS=1`). Do not launch
+Uvicorn or Gunicorn with multiple workers: active-work cancellation is
+process-local, so multiple API processes can publish conflicting run state. Run
+only one API service instance for a deployment; horizontal API scaling is not
+supported.
+
 ## systemd
 
 The bundle includes example units under `contrib/systemd/`. They assume:
@@ -77,8 +86,13 @@ The bundle includes example units under `contrib/systemd/`. They assume:
   the active release;
 - a dedicated `mafia` user and group own runtime work;
 - deployment configuration is stored at `/etc/mafia/mafia.env`;
-- `MAFIA_DATA_DIR=/var/lib/mafia` and the `mafia` user's GitHub, Copilot, and
-  container-engine credentials live under `/var/lib/mafia`.
+- `MAFIA_DATA_DIR` defaults to `/var/lib/mafia`, and the `mafia` user's GitHub,
+  Copilot, and container-engine credentials live there.
+
+`/etc/mafia/mafia.env` can override that default. systemd applies the unit's
+`EnvironmentFile=` values after its `Environment=` values, so set
+`MAFIA_DATA_DIR` there only when the operator intentionally uses another
+persistent location.
 
 Install the examples after reviewing their paths and hardening for the target
 host:

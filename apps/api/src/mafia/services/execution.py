@@ -53,6 +53,10 @@ class PhaseExecutionError(RuntimeError):
     pass
 
 
+class PhaseNotReadyError(PhaseExecutionError):
+    pass
+
+
 async def validate_worktree_diff(worktree: Path) -> list[str]:
     changed = await run_command(
         ("git", "-C", str(worktree), "diff", "--name-only", "-z", "HEAD")
@@ -162,7 +166,7 @@ async def _execute_phase(
 ) -> None:
     run, phase = await _phase_with_run(run_id, phase_id)
     if run.state != RunState.READY_FOR_PHASE or phase.status != PhaseState.READY:
-        raise PhaseExecutionError("Phase is not ready for execution")
+        raise PhaseNotReadyError("Phase is not ready for execution")
 
     workspaces = WorkspaceService()
     identity = RepositoryIdentity(run.repository.owner, run.repository.name)

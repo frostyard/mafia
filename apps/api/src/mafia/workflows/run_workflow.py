@@ -1294,9 +1294,28 @@ class RunWorkflowExecutor(Executor):
         ctx: WorkflowContext[Any, str],
     ) -> None:
         decision = PhaseDecision.model_validate(response)
-        if decision.action == "cancel":
-            async with SessionFactory() as session:
-                run = await get_run(session, original_request.run_id)
+        async with SessionFactory() as session:
+            run = await get_run(session, original_request.run_id)
+            phase = await session.get(Phase, original_request.phase_id)
+            if (
+                phase is None
+                or phase.run_id != run.id
+                or run.state != RunState.READY_FOR_PHASE
+                or phase.status != PhaseState.READY
+            ):
+                await ctx.yield_output(
+                    "Ignored a stale phase decision because the phase is no longer ready."
+                )
+                return
+            if decision.action == "cancel":
+                session.add(
+                    Decision(
+                        run_id=run.id,
+                        phase_id=phase.id,
+                        decision_type=DecisionType.CANCEL,
+                    )
+                )
+                await session.commit()
                 await transition_run(
                     session,
                     run.id,
@@ -1304,11 +1323,27 @@ class RunWorkflowExecutor(Executor):
                     expected_version=run.version,
                     event_type="run.cancelled",
                 )
-            await ctx.yield_output("Run cancelled.")
-            return
-        from mafia.services.execution import execute_phase
+                await ctx.yield_output("Run cancelled.")
+                return
+        from mafia.services.execution import PhaseNotReadyError, execute_phase
 
-        await execute_phase(original_request.run_id, original_request.phase_id, ctx)
+        try:
+            await execute_phase(original_request.run_id, original_request.phase_id, ctx)
+        except PhaseNotReadyError:
+            async with SessionFactory() as session:
+                run = await get_run(session, original_request.run_id)
+                phase = await session.get(Phase, original_request.phase_id)
+                if (
+                    phase is None
+                    or phase.run_id != run.id
+                    or run.state != RunState.READY_FOR_PHASE
+                    or phase.status != PhaseState.READY
+                ):
+                    await ctx.yield_output(
+                        "Ignored a stale phase decision because the phase is no longer ready."
+                    )
+                    return
+            raise
 
 
 def build_run_workflow(

@@ -1,6 +1,7 @@
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from agent_framework import WorkflowContext
@@ -10,6 +11,7 @@ from mafia.domain.artifacts import (
     ArtifactDecisionRequest,
     ConsolidatedPullRequestReview,
     ImplementationPlan,
+    PhaseDecisionRequest,
     PullRequestReview,
     PullRequestReviewDecisionRequest,
 )
@@ -23,6 +25,7 @@ from mafia.domain.enums import (
 )
 from mafia.services import operations
 from mafia.services.commands import CommandResult
+from mafia.services.execution import PhaseExecutionError, PhaseNotReadyError
 from mafia.services.pr_reviews import PullRequestReviewService
 from mafia.workflows import run_workflow
 from sqlalchemy import select
@@ -320,6 +323,236 @@ async def test_stale_artifact_decision_is_ignored_after_revision_changes(
     assert context.outputs == [
         "Ignored a stale artifact decision because the workflow has moved on."
     ]
+
+
+def phase_decision_request(phase: Phase) -> PhaseDecisionRequest:
+    return PhaseDecisionRequest(
+        run_id=phase.run_id,
+        phase_id=phase.id,
+        ordinal=phase.ordinal,
+        title=phase.title,
+        objective=phase.objective,
+        prompt="Start phase?",
+    )
+
+
+async def ready_phase(
+    session: AsyncSession,
+    *,
+    title: str = "Ready phase",
+) -> tuple[Run, Phase]:
+    repository = Repository(
+        owner="octo",
+        name=f"repo-{title}",
+        remote_url="https://github.com/octo/repo.git",
+    )
+    session.add(repository)
+    await session.flush()
+    run = Run(
+        repository_id=repository.id,
+        requirement_type=RequirementType.TEXT,
+        requirement_text="Decide phase",
+        primary_model="gpt-5.6-sol",
+        reviewer_model="claude-opus-4.8",
+        state=RunState.READY_FOR_PHASE,
+    )
+    session.add(run)
+    await session.flush()
+    phase = Phase(
+        run_id=run.id,
+        ordinal=1,
+        title=title,
+        objective="Verify phase decisions",
+        dependencies=[],
+        details={},
+        status=PhaseState.READY,
+        plan_revision=1,
+        source_sha="a" * 40,
+    )
+    session.add(phase)
+    await session.commit()
+    return run, phase
+
+
+@pytest.mark.asyncio
+async def test_ready_phase_start_executes_without_cancellation_output(
+    workflow_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with workflow_session_factory() as session:
+        run, phase = await ready_phase(session)
+
+    execute_phase = AsyncMock()
+    monkeypatch.setattr("mafia.services.execution.execute_phase", execute_phase)
+    context = RecordingContext()
+
+    await run_workflow.RunWorkflowExecutor(run.thread_id).decide_phase(
+        phase_decision_request(phase),
+        {"action": "start"},
+        cast(WorkflowContext[Any, str], context),
+    )
+
+    execute_phase.assert_awaited_once_with(run.id, phase.id, context)
+    assert "Run cancelled." not in context.outputs
+
+
+@pytest.mark.asyncio
+async def test_phase_start_that_becomes_stale_is_ignored(
+    workflow_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with workflow_session_factory() as session:
+        run, phase = await ready_phase(session)
+
+    async def become_stale(*_: object) -> None:
+        async with workflow_session_factory() as session:
+            current_phase = await session.get(Phase, phase.id)
+            assert current_phase is not None
+            current_phase.status = PhaseState.EXECUTING
+            await session.commit()
+        raise PhaseNotReadyError()
+
+    execute_phase = AsyncMock(side_effect=become_stale)
+    monkeypatch.setattr("mafia.services.execution.execute_phase", execute_phase)
+    context = RecordingContext()
+
+    await run_workflow.RunWorkflowExecutor(run.thread_id).decide_phase(
+        phase_decision_request(phase),
+        {"action": "start"},
+        cast(WorkflowContext[Any, str], context),
+    )
+
+    execute_phase.assert_awaited_once_with(run.id, phase.id, context)
+    assert context.outputs == [
+        "Ignored a stale phase decision because the phase is no longer ready."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_phase_start_reraises_non_readiness_execution_errors(
+    workflow_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with workflow_session_factory() as session:
+        run, phase = await ready_phase(session)
+
+    execute_phase = AsyncMock(side_effect=PhaseExecutionError("Phase is not ready for execution"))
+    monkeypatch.setattr("mafia.services.execution.execute_phase", execute_phase)
+    context = RecordingContext()
+
+    with pytest.raises(PhaseExecutionError, match="Phase is not ready for execution"):
+        await run_workflow.RunWorkflowExecutor(run.thread_id).decide_phase(
+            phase_decision_request(phase),
+            {"action": "start"},
+            cast(WorkflowContext[Any, str], context),
+        )
+
+    assert context.outputs == []
+
+
+@pytest.mark.asyncio
+async def test_stale_phase_start_is_ignored(
+    workflow_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with workflow_session_factory() as session:
+        run, phase = await ready_phase(session)
+        phase.status = PhaseState.EXECUTING
+        await session.commit()
+
+    execute_phase = AsyncMock()
+    monkeypatch.setattr("mafia.services.execution.execute_phase", execute_phase)
+    context = RecordingContext()
+
+    await run_workflow.RunWorkflowExecutor(run.thread_id).decide_phase(
+        phase_decision_request(phase),
+        {"action": "start"},
+        cast(WorkflowContext[Any, str], context),
+    )
+
+    assert context.outputs == [
+        "Ignored a stale phase decision because the phase is no longer ready."
+    ]
+    execute_phase.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_stale_phase_cancel_is_ignored(
+    workflow_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with workflow_session_factory() as session:
+        run, phase = await ready_phase(session)
+        run.state = RunState.EXECUTING_PHASE
+        await session.commit()
+
+    context = RecordingContext()
+    await run_workflow.RunWorkflowExecutor(run.thread_id).decide_phase(
+        phase_decision_request(phase),
+        {"action": "cancel"},
+        cast(WorkflowContext[Any, str], context),
+    )
+
+    async with workflow_session_factory() as session:
+        unchanged_run = await session.get(Run, run.id)
+    assert unchanged_run is not None
+    assert unchanged_run.state == RunState.EXECUTING_PHASE
+    assert context.outputs == [
+        "Ignored a stale phase decision because the phase is no longer ready."
+    ]
+
+
+@pytest.mark.asyncio
+async def test_phase_decision_for_another_run_is_ignored(
+    workflow_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async with workflow_session_factory() as session:
+        run, _ = await ready_phase(session, title="First phase")
+        _, phase = await ready_phase(session, title="Second phase")
+
+    execute_phase = AsyncMock()
+    monkeypatch.setattr("mafia.services.execution.execute_phase", execute_phase)
+    context = RecordingContext()
+    request = phase_decision_request(phase).model_copy(update={"run_id": run.id})
+
+    await run_workflow.RunWorkflowExecutor(run.thread_id).decide_phase(
+        request,
+        {"action": "start"},
+        cast(WorkflowContext[Any, str], context),
+    )
+
+    assert context.outputs == [
+        "Ignored a stale phase decision because the phase is no longer ready."
+    ]
+    execute_phase.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_phase_cancel_records_a_decision(
+    workflow_session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with workflow_session_factory() as session:
+        run, phase = await ready_phase(session)
+
+    context = RecordingContext()
+    await run_workflow.RunWorkflowExecutor(run.thread_id).decide_phase(
+        phase_decision_request(phase),
+        {"action": "cancel"},
+        cast(WorkflowContext[Any, str], context),
+    )
+
+    async with workflow_session_factory() as session:
+        cancelled_run = await session.get(Run, run.id)
+        decision = await session.scalar(
+            select(Decision).where(
+                Decision.run_id == run.id,
+                Decision.phase_id == phase.id,
+                Decision.decision_type == DecisionType.CANCEL,
+            )
+        )
+    assert cancelled_run is not None
+    assert cancelled_run.state == RunState.CANCELLED
+    assert decision is not None
 
 
 class PullRequestReviewContext:

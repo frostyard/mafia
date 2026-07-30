@@ -1,9 +1,49 @@
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, Protocol, cast
 
 from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic.fields import FieldInfo
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+)
+
+
+class InitSettingsSourceProtocol(Protocol):
+    init_kwargs: dict[str, Any]
+
+
+class WithoutExplicitSettingsSource(PydanticBaseSettingsSource):
+    def __init__(
+        self,
+        source: PydanticBaseSettingsSource,
+        explicit: set[str],
+        source_name: str,
+    ) -> None:
+        super().__init__(source.settings_cls)
+        self.__name__ = source_name
+        self.source = source
+        self.explicit = explicit
+
+    def _set_current_state(self, state: dict[str, Any]) -> None:
+        super()._set_current_state(state)
+        self.source._set_current_state(state)
+
+    def _set_settings_sources_data(self, states: dict[str, dict[str, Any]]) -> None:
+        super()._set_settings_sources_data(states)
+        self.source._set_settings_sources_data(states)
+
+    def get_field_value(self, field: FieldInfo, field_name: str) -> tuple[Any, str, bool]:
+        return self.source.get_field_value(field, field_name)
+
+    def __call__(self) -> dict[str, Any]:
+        return {
+            field_name: value
+            for field_name, value in self.source().items()
+            if field_name not in self.explicit
+        }
 
 
 class Settings(BaseSettings):
@@ -12,6 +52,7 @@ class Settings(BaseSettings):
     data_dir: Path = Path("data")
     api_host: str = "127.0.0.1"
     api_port: int = 8000
+    api_workers: Literal[1] = 1
     command_timeout_seconds: float = Field(default=120.0, gt=0)
     command_output_limit: int = Field(default=1_000_000, gt=0)
     sandbox_process_limit: int = Field(default=128, ge=16, le=1024)
@@ -47,6 +88,24 @@ class Settings(BaseSettings):
             "gpt-5.6-sol": "claude-opus-4.8",
         }
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        init_kwargs = cast(InitSettingsSourceProtocol, init_settings).init_kwargs
+        explicit = set(init_kwargs)
+        return (
+            init_settings,
+            WithoutExplicitSettingsSource(env_settings, explicit, "EnvSettingsSource"),
+            WithoutExplicitSettingsSource(dotenv_settings, explicit, "DotEnvSettingsSource"),
+            file_secret_settings,
+        )
 
     @field_validator("model_pairs")
     @classmethod

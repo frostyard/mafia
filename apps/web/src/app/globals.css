@@ -236,19 +236,14 @@ code {
   text-transform: uppercase;
 }
 
-.state-completed,
-.state-ready_for_phase,
-.state-awaiting_spec_decision,
-.state-awaiting_plan_decision,
-.phase-merged,
+.tone-success,
+.tone-decision,
 .operation-completed {
   border-color: #47b8ef4d;
   color: var(--state-ok);
 }
 
-.state-failed,
-.state-cancelled,
-.phase-failed,
+.tone-danger,
 .operation-failed,
 .operation-timed_out,
 .operation-cancelled {
@@ -256,21 +251,17 @@ code {
   color: var(--state-danger);
 }
 
-.state-generating_spec,
-.state-grounding_plan,
-.state-generating_plan,
-.state-reviewing_plan,
-.state-adjudicating_plan,
-.state-persisting_plan,
-.state-executing_phase,
-.state-pr_open,
-.state-waiting_for_merge,
-.state-regrounding,
-.phase-executing,
+.tone-working,
+.tone-external,
 .phase-waiting_for_merge,
 .operation-running {
   border-color: #e0b15c55;
   color: var(--state-warn);
+}
+
+.tone-idle {
+  border-color: var(--line-tag);
+  color: var(--tag-text);
 }
 
 .run-form {
@@ -1021,18 +1012,31 @@ details.ph-card.artifact-data .artifact-card p {
   font-size: 10.5px;
 }
 
-.status-working {
+.status-working,
+.tone-working {
   border-left-color: var(--state-warn);
 }
 
 .status-decision,
-.status-completed {
+.tone-decision,
+.tone-success {
   border-left-color: var(--state-ok);
 }
 
 .status-failed,
-.status-cancelled {
+.status-cancelled,
+.tone-danger {
   border-left-color: var(--state-danger);
+}
+
+.status-idle,
+.tone-idle {
+  border-left-color: #5f7f92;
+}
+
+.status-external,
+.tone-external {
+  border-left-color: #47b8ef;
 }
 
 .stall-warning {

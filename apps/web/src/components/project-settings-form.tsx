@@ -27,6 +27,12 @@ function renderToml(mode: Project["execution_mode"], commands: ValidationCommand
   return `${lines.join("\n")}\n`;
 }
 
+function parseTimeout(value: string): number | undefined {
+  if (!/^\d+$/.test(value)) return undefined;
+  const timeout = Number(value);
+  return timeout >= 1 && timeout <= 3600 ? timeout : undefined;
+}
+
 const emptyCommand: ValidationCommand = {
   name: "",
   run: "",
@@ -38,12 +44,22 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
   const router = useRouter();
   const [mode, setMode] = useState(project.execution_mode);
   const [commands, setCommands] = useState(project.validation_commands);
-  const generatedToml = useMemo(() => renderToml(mode, commands), [mode, commands]);
+  const [timeoutDrafts, setTimeoutDrafts] = useState(() =>
+    project.validation_commands.map((command) => String(command.timeout_seconds)),
+  );
+  const [timeoutErrors, setTimeoutErrors] = useState<boolean[]>([]);
+  const structuredCommands = useMemo(
+    () => commands.map((command, index) => ({ ...command, timeout_seconds: parseTimeout(timeoutDrafts[index]) ?? 0 })),
+    [commands, timeoutDrafts],
+  );
+  const generatedToml = useMemo(() => renderToml(mode, structuredCommands), [mode, structuredCommands]);
   const [tomlOverride, setTomlOverride] = useState<string>();
   const [error, setError] = useState<string>();
   const [saved, setSaved] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const content = tomlOverride ?? generatedToml;
+  const rawMode = tomlOverride !== undefined;
+  const hasInvalidTimeout = !rawMode && timeoutDrafts.some((timeout) => parseTimeout(timeout) === undefined);
 
   function updateCommand(index: number, change: Partial<ValidationCommand>) {
     setCommands((current) =>
@@ -51,7 +67,6 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
         commandIndex === index ? { ...command, ...change } : command
       ),
     );
-    setTomlOverride(undefined);
     setSaved(false);
   }
 
@@ -59,13 +74,20 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
     event.preventDefault();
     setError(undefined);
     setSaved(false);
+    if (!rawMode) {
+      const invalidTimeouts = timeoutDrafts.map((timeout) => parseTimeout(timeout) === undefined);
+      setTimeoutErrors(invalidTimeouts);
+      if (invalidTimeouts.some(Boolean)) return;
+    }
     setSubmitting(true);
     try {
       const updated = await updateProjectConfiguration(project.id, content);
       setMode(updated.execution_mode);
       setCommands(updated.validation_commands);
+      setTimeoutDrafts(updated.validation_commands.map((command) => String(command.timeout_seconds)));
+      setTimeoutErrors([]);
       setSaved(true);
-      setTomlOverride(undefined);
+      if (rawMode) setTomlOverride(renderToml(updated.execution_mode, updated.validation_commands));
       router.refresh();
     } catch (caught) {
       setError((caught as ApiError).message);
@@ -75,8 +97,8 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
   }
 
   return (
-    <form className="ph-card project-settings" onSubmit={submit}>
-      <fieldset className="field">
+    <form className="ph-card project-settings" noValidate onSubmit={submit}>
+      <fieldset className="field" disabled={rawMode}>
         <legend>Execution environment</legend>
         <div className="segmented-control">
           <label>
@@ -85,7 +107,6 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
               checked={mode === "isolated"}
               onChange={() => {
                 setMode("isolated");
-                setTomlOverride(undefined);
                 setSaved(false);
               }}
             />
@@ -97,7 +118,6 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
               checked={mode === "host"}
               onChange={() => {
                 setMode("host");
-                setTomlOverride(undefined);
                 setSaved(false);
               }}
             />
@@ -117,9 +137,11 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
         <button
           className="button button-secondary button-small"
           type="button"
+          disabled={rawMode}
           onClick={() => {
             setCommands((current) => [...current, { ...emptyCommand }]);
-            setTomlOverride(undefined);
+            setTimeoutDrafts((current) => [...current, String(emptyCommand.timeout_seconds)]);
+            setTimeoutErrors((current) => [...current, false]);
           }}
         >
           Add command
@@ -133,7 +155,7 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
         </p>
       ) : null}
       {commands.map((command, index) => (
-        <fieldset className="project-command" key={index}>
+        <fieldset className="project-command" disabled={rawMode} key={index}>
           <div className="field">
             <label htmlFor={`command-name-${index}`}>Name</label>
             <input
@@ -166,11 +188,24 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
                 type="number"
                 min={1}
                 max={3600}
-                value={command.timeout_seconds}
-                onChange={(event) =>
-                  updateCommand(index, { timeout_seconds: Number(event.target.value) })
-                }
+                value={timeoutDrafts[index] ?? ""}
+                aria-describedby={timeoutErrors[index] ? `command-timeout-error-${index}` : undefined}
+                aria-invalid={timeoutErrors[index] || undefined}
+                onChange={(event) => {
+                  setTimeoutDrafts((current) =>
+                    current.map((timeout, commandIndex) => commandIndex === index ? event.target.value : timeout),
+                  );
+                  setTimeoutErrors((current) =>
+                    current.map((hasError, commandIndex) => commandIndex === index ? false : hasError),
+                  );
+                  setSaved(false);
+                }}
               />
+              {timeoutErrors[index] ? (
+                <p id={`command-timeout-error-${index}`} className="form-alert" role="alert">
+                  Enter a whole number from 1 to 3600.
+                </p>
+              ) : null}
             </div>
           </div>
           <button
@@ -178,7 +213,8 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
             type="button"
             onClick={() => {
               setCommands((current) => current.filter((_, commandIndex) => commandIndex !== index));
-              setTomlOverride(undefined);
+              setTimeoutDrafts((current) => current.filter((_, commandIndex) => commandIndex !== index));
+              setTimeoutErrors((current) => current.filter((_, commandIndex) => commandIndex !== index));
             }}
           >
             Remove
@@ -196,20 +232,49 @@ export function ProjectSettingsForm({ project }: { project: Project }) {
             value={content}
             onChange={(event) => {
               setTomlOverride(event.target.value);
+              setTimeoutErrors([]);
               setSaved(false);
             }}
           />
           <p className="field-help">
             Pasted TOML is validated and normalized when saved.
           </p>
+          {rawMode ? (
+            <button
+              className="button button-secondary button-small"
+              type="button"
+              onClick={() => {
+                setTomlOverride(undefined);
+                setSaved(false);
+              }}
+            >
+              Discard raw TOML and edit fields
+            </button>
+          ) : null}
         </div>
-        <a
-          className="button button-secondary button-small"
-          download={`${project.owner}-${project.name}.mafia.toml`}
-          href={`data:application/toml;charset=utf-8,${encodeURIComponent(content)}`}
-        >
-          Download TOML
-        </a>
+        {hasInvalidTimeout ? (
+          <>
+            <button
+              className="button button-secondary button-small"
+              type="button"
+              disabled
+              aria-describedby="invalid-timeout-download-help"
+            >
+              Download TOML
+            </button>
+            <p id="invalid-timeout-download-help" className="field-help">
+              Resolve timeout errors before downloading structured TOML.
+            </p>
+          </>
+        ) : (
+          <a
+            className="button button-secondary button-small"
+            download={`${project.owner}-${project.name}.mafia.toml`}
+            href={`data:application/toml;charset=utf-8,${encodeURIComponent(content)}`}
+          >
+            Download TOML
+          </a>
+        )}
       </details>
 
       {error ? <p className="form-alert" role="alert">{error}</p> : null}

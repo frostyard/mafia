@@ -68,4 +68,27 @@ describe("RunForm", () => {
       (screen.getByRole("button", { name: "Create run" }) as HTMLButtonElement).disabled,
     ).toBe(true);
   });
+
+  it("distinguishes a model availability load failure from unavailable models", () => {
+    render(<RunForm modelLoadError="Model availability could not be loaded." />);
+
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Model availability could not be loaded.",
+    );
+    expect(screen.queryByText(/No required models are currently available/)).toBeNull();
+    const retry = screen.getByRole("link", { name: "Try again" });
+    expect(retry.tagName).toBe("A");
+    expect(retry.getAttribute("href")).toBe("/runs/new");
+  });
+
+  it("shows the empty model state when availability is loaded without pairs", () => {
+    render(
+      <RunForm
+        modelAvailability={{ pairs: [], required: [], available: [], missing: [] }}
+      />,
+    );
+
+    expect(screen.getByText(/No required models are currently available/)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
 });

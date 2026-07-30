@@ -51,6 +51,8 @@ if [[ -d apps/web/public ]]; then
 fi
 
 cp -a apps/api/migrations "$staging/$release_name/apps/api/migrations"
+find "$staging/$release_name/apps/api/migrations" -type d -name __pycache__ -prune -exec rm -rf {} +
+find "$staging/$release_name/apps/api/migrations" -type f \( -name '*.pyc' -o -name '*.pyo' \) -delete
 cp -a packaging/bin/. "$staging/$release_name/bin/"
 cp -a contrib/. "$staging/$release_name/contrib/"
 cp contrib/start.sh "$staging/$release_name/start.sh"

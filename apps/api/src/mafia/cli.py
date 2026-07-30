@@ -9,6 +9,7 @@ def main() -> None:
         "mafia.main:app",
         host=settings.api_host,
         port=settings.api_port,
+        workers=settings.api_workers,
         proxy_headers=True,
     )
 

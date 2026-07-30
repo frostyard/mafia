@@ -11,6 +11,7 @@ import {
 } from "@/lib/activity-labels";
 import { shouldRefreshRunPage } from "@/lib/activity-refresh";
 import type { Operation, RunActivity, WorkflowType } from "@/lib/types";
+import { formatTime, isRunState, isTerminalState } from "@/lib/workflow-state";
 
 const planSteps = [
   {
@@ -39,11 +40,11 @@ function formatElapsed(seconds: number): string {
 }
 
 function timeLabel(value: string): string {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(new Date(value));
+  return formatTime(value);
+}
+
+function isTerminalActivity(activity: RunActivity): boolean {
+  return isRunState(activity.state) && isTerminalState(activity.state);
 }
 
 function stringValues(value: unknown): string[] {
@@ -253,9 +254,11 @@ export function VisibilityRail({
   const { agent, isReady } = useAgent({ agentId: "mafia" });
 
   useEffect(() => {
+    if (isTerminalActivity(activityRef.current)) return;
     let disposed = false;
-    let timer: ReturnType<typeof setTimeout>;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     async function poll() {
+      let shouldContinue = true;
       try {
         const next = await getRunActivity(runId);
         if (disposed) return;
@@ -265,18 +268,19 @@ export function VisibilityRail({
         }
         activityRef.current = next;
         setActivity(next);
+        shouldContinue = !isTerminalActivity(next);
       } catch {
         if (!disposed) {
           setPollError("Live updates are paused while the API is unavailable.");
         }
       } finally {
-        if (!disposed) timer = setTimeout(poll, 3_000);
+        if (!disposed && shouldContinue) timer = setTimeout(poll, 3_000);
       }
     }
     timer = setTimeout(poll, 3_000);
     return () => {
       disposed = true;
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
     };
   }, [router, runId]);
 
@@ -316,7 +320,7 @@ export function VisibilityRail({
 
   return (
     <aside className="visibility-rail" aria-label="Workflow activity">
-      <section className={`status-banner status-${activity.status_mode}`} aria-live="polite">
+      <section className={`status-banner status-${activity.status_mode} tone-${activity.status_mode === "completed" ? "success" : activity.status_mode === "failed" || activity.status_mode === "cancelled" ? "danger" : activity.status_mode}`} aria-live="polite">
         <p className="eyebrow">Workflow status</p>
         <h2>{activity.status_mode === "decision" ? "Input required" : activity.status_mode}</h2>
         <p>{activity.status_message}</p>

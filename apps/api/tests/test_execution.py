@@ -1,8 +1,12 @@
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
-from mafia.services.execution import PhaseExecutionError, validate_worktree_diff
+from mafia.domain.enums import PhaseState, RunState
+from mafia.services import execution
+from mafia.services.execution import PhaseExecutionError, PhaseNotReadyError, validate_worktree_diff
 
 
 def initialize_repository(path: Path) -> None:
@@ -33,3 +37,24 @@ async def test_accepts_changed_internal_symlink(tmp_path: Path) -> None:
     (tmp_path / "link").symlink_to("target.txt")
 
     assert await validate_worktree_diff(tmp_path) == ["link", "target.txt"]
+
+
+@pytest.mark.asyncio
+async def test_execute_phase_raises_typed_error_when_phase_is_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        execution,
+        "_phase_with_run",
+        AsyncMock(
+            return_value=(
+                SimpleNamespace(state=RunState.INTAKE),
+                SimpleNamespace(status=PhaseState.READY),
+            )
+        ),
+    )
+
+    with pytest.raises(PhaseNotReadyError):
+        await execution._execute_phase(  # pyright: ignore[reportPrivateUsage]
+            "run-1", "phase-1", AsyncMock()
+        )
