@@ -921,6 +921,24 @@ details.ph-card.artifact-data .artifact-card p {
   overflow-wrap: anywhere;
 }
 
+.connection-warning {
+  margin: 12px 0 0;
+  color: var(--state-warn);
+  font-size: 11px;
+}
+
+.reset-confirmation {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid #e2b86d55;
+  background: rgba(226, 184, 109, 0.06);
+}
+
+.reset-confirmation p {
+  margin: 0 0 12px;
+  color: var(--text-body);
+}
+
 .decision-card {
   padding: 15px;
   border: 1px solid var(--line-strong);

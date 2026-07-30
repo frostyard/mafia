@@ -337,10 +337,10 @@ export function VisibilityRail({
               Cancel work
             </button>
           ) : null}
-          {activity.can_retry ? (
+          {activity.can_retry && activity.state !== "failed" ? (
             <button
               className="button button-small"
-              disabled={isControlling || !isReady}
+              disabled={isControlling}
               onClick={retry}
               type="button"
             >
@@ -348,6 +348,11 @@ export function VisibilityRail({
             </button>
           ) : null}
         </div>
+        {activity.can_retry && activity.state !== "failed" && !isReady ? (
+          <p className="operation-error">
+            The agent connection is not ready. Retry will attempt to reconnect it.
+          </p>
+        ) : null}
         {controlError ? <p className="operation-error">{controlError}</p> : null}
         {pollError ? <p className="operation-error">{pollError}</p> : null}
       </section>
