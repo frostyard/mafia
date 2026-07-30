@@ -9,8 +9,12 @@ export function EvidenceDrawer({
 }) {
   if (!evidence.length && !error) return null;
   return (
-    <details className="ph-card artifact-data">
-      <summary>Source evidence ({evidence.length})</summary>
+    <details className="ph-card artifact-data" open={Boolean(error)}>
+      <summary>
+        {error
+          ? `Source evidence unavailable (${evidence.length})`
+          : `Source evidence (${evidence.length})`}
+      </summary>
       {error ? <p className="form-alert" role="alert">{error}</p> : null}
       <div className="artifact-list">
         {evidence.map((item) => (

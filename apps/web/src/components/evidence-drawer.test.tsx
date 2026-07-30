@@ -25,10 +25,20 @@ describe("EvidenceDrawer", () => {
   });
 
   it("renders its localized error when evidence is unavailable", () => {
-    render(<EvidenceDrawer evidence={[]} error="Source evidence is unavailable." />);
+    const { container } = render(
+      <EvidenceDrawer evidence={[]} error="Source evidence is unavailable." />,
+    );
 
     expect(screen.getByRole("alert").textContent).toContain(
       "Source evidence is unavailable.",
     );
+    expect(screen.getByText("Source evidence unavailable (0)")).toBeTruthy();
+    expect(container.querySelector("details")?.open).toBe(true);
+  });
+
+  it("remains collapsed when evidence loads without an error", () => {
+    const { container } = render(<EvidenceDrawer evidence={[evidence]} />);
+
+    expect(container.querySelector("details")?.open).toBe(false);
   });
 });

@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import RunPage from "./page";
+import { notFound } from "next/navigation";
 import { getEvidence, getRun, getRunActivity } from "@/lib/api";
 import type { RunActivity, RunDetail } from "@/lib/types";
 
@@ -71,6 +72,10 @@ const activity = {
 
 describe("RunPage", () => {
   beforeEach(() => {
+    vi.mocked(notFound).mockReset();
+    vi.mocked(getEvidence).mockReset();
+    vi.mocked(getRun).mockReset();
+    vi.mocked(getRunActivity).mockReset();
     vi.mocked(getRun).mockResolvedValue(run);
     vi.mocked(getRunActivity).mockResolvedValue(activity);
     vi.mocked(getEvidence).mockRejectedValue(new Error("Evidence unavailable"));
@@ -84,5 +89,29 @@ describe("RunPage", () => {
       "Source evidence is unavailable.",
     );
     expect(screen.queryByText("We could not load this run.")).toBeNull();
+  });
+
+  it("invokes notFound when the run does not exist", async () => {
+    vi.mocked(getRun).mockRejectedValue({
+      code: "run_not_found",
+      message: "Run not found",
+    });
+    vi.mocked(getEvidence).mockResolvedValue([]);
+
+    await RunPage({ params: Promise.resolve({ id: "missing-run" }) });
+
+    expect(notFound).toHaveBeenCalledOnce();
+  });
+
+  it("renders the unavailable state when essential run loading fails", async () => {
+    vi.mocked(getRun).mockRejectedValue(new Error("API unavailable"));
+    vi.mocked(getEvidence).mockResolvedValue([]);
+
+    render(await RunPage({ params: Promise.resolve({ id: "run-1" }) }));
+
+    expect(
+      screen.getByRole("heading", { name: "We could not load this run." }),
+    ).toBeTruthy();
+    expect(notFound).not.toHaveBeenCalled();
   });
 });
