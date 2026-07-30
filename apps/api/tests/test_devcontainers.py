@@ -48,19 +48,15 @@ async def test_repository_without_devcontainer_uses_bubblewrap(tmp_path: Path) -
 
 @pytest.mark.asyncio
 async def test_host_mode_bypasses_devcontainer_and_bubblewrap(
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     (tmp_path / ".devcontainer.json").write_text(
         '{"privileged":true}',
         encoding="utf-8",
     )
-    monkeypatch.setenv("MAFIA_EXECUTION_MODE", "host")
-    devcontainers.get_settings.cache_clear()
-    try:
-        environment = await devcontainers.create_execution_environment(tmp_path)
-    finally:
-        devcontainers.get_settings.cache_clear()
+    environment = await devcontainers.create_execution_environment(
+        tmp_path, execution_mode="host"
+    )
 
     assert isinstance(environment, HostExecutionEnvironment)
 

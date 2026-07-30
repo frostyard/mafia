@@ -24,6 +24,12 @@ def test_rejects_non_github_repository() -> None:
         parse_repository("https://example.com/octo/repo")
 
 
+@pytest.mark.parametrize("value", ["../repo", "octo/..", "./repo", "octo/."])
+def test_rejects_repository_path_components(value: str) -> None:
+    with pytest.raises(InvalidRepositoryError):
+        parse_repository(value)
+
+
 def test_rejects_repository_outside_configured_owner(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

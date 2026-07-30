@@ -15,8 +15,8 @@ The delivery workflow:
 4. Sends the plan to the competing model for adversarial review.
 5. Has the primary model adjudicate every finding and produce a revised, PR-sized phased plan.
 6. Pauses for the user to accept or refine the reviewed plan.
-7. Requires explicit approval before executing each phase.
-8. Validates the implementation and freezes its exact staged diff.
+7. Resolves repository or host-owned deterministic validation before offering phase approval.
+8. Runs the frozen validation commands, validates the implementation, and freezes its exact staged diff.
 9. Sends that candidate to the competing model for one comprehensive implementation review.
 10. Has the primary model adjudicate every finding and, when needed, perform one bounded remediation.
 11. Has the competing model verify only the remediation's closure.
@@ -25,6 +25,9 @@ The delivery workflow:
 
 Git pushes, pull-request creation, merge reconciliation, and crash recovery are deterministic host-owned
 operations rather than model-owned shell actions.
+
+The implementation model may report useful targeted checks, but those checks are supplemental. The
+repository or host-owned `.mafia.toml` commands form the mechanical gate and run again after remediation.
 
 ### Bounded implementation review
 
@@ -69,8 +72,12 @@ model identifiers selected when they were created.
 ## Ad-hoc pull request review
 
 Select **Review pull request**, enter a repository and pull request number or URL, and choose the
-adjudicator model. MAFIA fetches the pull request's exact base and head commits and creates a read-only
-analysis worktree at the head.
+adjudicator model. MAFIA fetches the pull request's exact base and head commits and creates an analysis
+worktree at the head. Configured validation may write temporary output before MAFIA restores the exact head;
+model review tools remain read-only.
+
+Repository validation commands are resolved from the immutable base commit, not the pull-request head, so
+the proposed change cannot introduce commands that MAFIA then executes.
 
 The configured pair then reviews the source and unified diff independently. Findings must cite lines
 changed by the pull request; repository content and pull request text remain untrusted input. The selected

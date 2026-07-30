@@ -33,6 +33,11 @@ from mafia.services.lifecycle import pull_request_for_branch
 from mafia.services.locks import acquire_repository_lock, release_repository_lock
 from mafia.services.operations import active_run_work, tracked_operation
 from mafia.services.operator import current_actor
+from mafia.services.project_config import (
+    ProjectConfigurationError,
+    resolve_project_configuration,
+    run_deterministic_validation,
+)
 from mafia.services.repositories import (
     RepositoryIdentity,
     require_repository_owner,
@@ -238,14 +243,26 @@ async def _execute_phase(
             )
             await session.commit()
         settings = get_settings()
+        project_configuration = resolve_project_configuration(identity, worktree)
+        if not project_configuration.validation_commands:
+            raise ProjectConfigurationError(
+                "Deterministic validation is not configured. Add repository .mafia.toml "
+                "or configure this project in mafia."
+            )
+        async with SessionFactory() as session:
+            current_phase = await session.get(Phase, phase.id)
+            if current_phase is None:
+                raise LookupError(phase.id)
+            current_phase.project_configuration = project_configuration.snapshot()
+            await session.commit()
         config_path = (
             None
-            if settings.execution_mode == "host"
+            if project_configuration.execution_mode == "host"
             else find_devcontainer_config(worktree)
         )
         candidate = (
             "host"
-            if settings.execution_mode == "host"
+            if project_configuration.execution_mode == "host"
             else "devcontainer"
             if config_path is not None
             else "bubblewrap"
@@ -267,6 +284,7 @@ async def _execute_phase(
         ) as operation:
             environment = await create_execution_environment(
                 worktree,
+                execution_mode=project_configuration.execution_mode,
                 progress=operation.update_detail,
             )
             operation.set_result(environment.description())
@@ -356,6 +374,13 @@ async def _execute_phase(
                             f"Validation failed: {validation_command}\n{result.stderr[-2_000:]}"
                         )
 
+        await run_deterministic_validation(
+            environment,
+            project_configuration,
+            run_id=run.id,
+            phase_id=phase.id,
+            stage="candidate",
+        )
         await run_reported_validation("candidate")
         candidate = await capture_staged_candidate(worktree)
         await run_command(("git", "-C", str(worktree), "diff", "--cached", "--check"))
@@ -412,6 +437,13 @@ async def _execute_phase(
             changed_files = await validate_worktree_diff(worktree)
             await run_command(("git", "-C", str(worktree), "add", "--all"))
             await run_command(("git", "-C", str(worktree), "diff", "--cached", "--check"))
+            await run_deterministic_validation(
+                environment,
+                project_configuration,
+                run_id=run.id,
+                phase_id=phase.id,
+                stage="remediation",
+            )
             await run_reported_validation("remediation")
             changed_files = await validate_worktree_diff(worktree)
             remediated_candidate = await capture_staged_candidate(worktree)
@@ -527,7 +559,13 @@ async def _execute_phase(
             f"## Summary\n\n{report.summary}\n\n"
             f"## Source\n\nPlanned from `{current_sha}`.\n\n"
             f"## Operator\n\n`{current_actor()}`\n\n"
-            "## Validation\n\n" + "\n".join(f"- `{command}`" for command in report.validation_commands)
+            "## Deterministic validation\n\n"
+            + "\n".join(
+                f"- `{command.run}` ({command.name})"
+                for command in project_configuration.validation_commands
+            )
+            + "\n\n## Agent-reported validation\n\n"
+            + "\n".join(f"- `{command}`" for command in report.validation_commands)
         )
         async with tracked_operation(
             run_id=run.id,

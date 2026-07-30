@@ -92,6 +92,7 @@ class Run(Base, TimestampMixin):
     active_spec_revision: Mapped[int | None] = mapped_column(Integer)
     active_plan_revision: Mapped[int | None] = mapped_column(Integer)
     active_review_revision: Mapped[int | None] = mapped_column(Integer)
+    project_configuration: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     failure_code: Mapped[str | None] = mapped_column(String(100))
     failure_message: Mapped[str | None] = mapped_column(Text)
 
@@ -207,6 +208,7 @@ class Phase(Base, TimestampMixin):
     verification_attempts: Mapped[int] = mapped_column(Integer, default=0)
     candidate_base_sha: Mapped[str | None] = mapped_column(String(64))
     candidate_diff_hash: Mapped[str | None] = mapped_column(String(64))
+    project_configuration: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     run: Mapped[Run] = relationship(back_populates="phases")
     __table_args__ = (UniqueConstraint("run_id", "ordinal"),)

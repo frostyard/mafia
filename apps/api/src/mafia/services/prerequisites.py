@@ -60,9 +60,8 @@ async def _probe(probe: Probe) -> Capability:
 
 async def readiness() -> Readiness:
     settings = get_settings()
-    required_probes = PROBES if settings.execution_mode == "isolated" else PROBES[:2]
     capabilities = list(
-        await asyncio.gather(*(_probe(probe) for probe in required_probes))
+        await asyncio.gather(*(_probe(probe) for probe in PROBES))
     )
     if shutil.which("gh") is None:
         capabilities.append(
@@ -87,18 +86,6 @@ async def readiness() -> Readiness:
             await _probe(Probe("github", "gh", ("auth", "status")))
         )
     required_count = len(capabilities)
-    if settings.execution_mode == "host":
-        capabilities.append(
-            Capability(
-                name="execution-environment",
-                available=True,
-                detail="host execution; isolation disabled",
-            )
-        )
-        return Readiness(
-            ready=all(capability.available for capability in capabilities[:required_count]),
-            capabilities=capabilities,
-        )
     try:
         cli = resolve_devcontainer_cli()
         cli_result = await run_command((cli, "--version"), timeout_seconds=10)

@@ -1,0 +1,7 @@
+version = 1
+
+[[validation.commands]]
+name = "Repository checks"
+run = "npm run check"
+working_directory = "."
+timeout_seconds = 3600

@@ -6,7 +6,9 @@ import type { AuthenticatedUser } from "@/lib/auth";
 
 export function Header({ user }: { user?: AuthenticatedUser }) {
   const pathname = usePathname();
-  const runsActive = pathname !== "/runs/new";
+  const projectsActive = pathname.startsWith("/projects");
+  const newRunActive = pathname === "/runs/new";
+  const runsActive = !projectsActive && !newRunActive;
   return (
     <aside className="ph-sidebar">
       <Link className="ph-brand" href="/">
@@ -22,9 +24,13 @@ export function Header({ user }: { user?: AuthenticatedUser }) {
           <span className="ph-nav-num">01</span>
           Runs
         </Link>
-        <Link className={`ph-nav-link${runsActive ? "" : " active"}`} href="/runs/new">
+        <Link className={`ph-nav-link${newRunActive ? " active" : ""}`} href="/runs/new">
           <span className="ph-nav-num">02</span>
           New run
+        </Link>
+        <Link className={`ph-nav-link${projectsActive ? " active" : ""}`} href="/projects">
+          <span className="ph-nav-num">03</span>
+          Projects
         </Link>
       </nav>
       <div className="ph-side-foot">

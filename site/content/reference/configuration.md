@@ -24,13 +24,14 @@ mafia reads `.env` through the `MAFIA_` prefix. Start from `.env.example`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MAFIA_EXECUTION_MODE` | `isolated` | Select `isolated` or trusted `host` execution |
 | `MAFIA_CONTAINER_ENGINE` | `auto` | Select Docker, Podman, or automatic detection |
 | `MAFIA_DEVCONTAINER_POLICY` | `strict` | Select strict validation or trusted `allow-anything` |
 | `MAFIA_DEVCONTAINER_NETWORK` | `setup-only` | Disconnect networking before model-directed work |
 | `MAFIA_CONTAINER_CPU_LIMIT` | `4` | Container CPU limit |
 | `MAFIA_CONTAINER_MEMORY_LIMIT` | `4g` | Container memory limit |
 | `MAFIA_SANDBOX_PROCESS_LIMIT` | `128` | Process ceiling for isolated execution |
+
+Execution mode is configured per project in the web interface rather than through an environment variable. See [Project configuration](/reference/project-configuration/).
 
 ## Authentication settings
 

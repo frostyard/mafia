@@ -9,9 +9,11 @@ Select **Review pull request**, enter a repository and pull request number or UR
 
 ## Ground the review
 
-mafia fetches the pull request's exact base and head commits and creates a read-only analysis worktree at the head. It resolves the merge base and validates findings only against lines changed by the pull request.
+mafia fetches the pull request's exact base and head commits and creates an analysis worktree at the head. Configured validation may write temporary output before mafia restores the exact head; model review tools remain read-only. It resolves the merge base and validates findings only against lines changed by the pull request.
 
 Repository content, pull request text, and review output remain untrusted input.
+
+When deterministic validation is configured for the project, mafia resolves repository commands from the immutable base commit, runs them against the exact head before model review, records the results, and restores the analysis worktree to the head commit. A pull request cannot introduce commands that mafia then executes. Without configuration, the review continues with an explicit `not_configured` result.
 
 ## Review independently
 
