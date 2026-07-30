@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { shouldRefreshRunPage } from "./activity-refresh";
-import type { RunActivity } from "@/lib/types";
+import type { Operation, RunActivity } from "@/lib/types";
 
 function activity(
   state: RunActivity["state"],
@@ -26,6 +26,28 @@ function activity(
   };
 }
 
+function artifactOperation(status: string): Operation {
+  return {
+    id: "operation-1",
+    phase_id: null,
+    operation_type: "artifact.persistence",
+    status,
+    model: null,
+    attempt: 1,
+    timeout_seconds: null,
+    detail: { artifact: "adversarial_review" },
+    result: null,
+    error: null,
+    created_at: "2026-07-30T00:00:00Z",
+    updated_at: "2026-07-30T00:00:01Z",
+    started_at: "2026-07-30T00:00:00Z",
+    heartbeat_at: "2026-07-30T00:00:01Z",
+    progress_at: "2026-07-30T00:00:01Z",
+    completed_at: status === "completed" ? "2026-07-30T00:00:01Z" : null,
+    elapsed_seconds: 1,
+  };
+}
+
 describe("shouldRefreshRunPage", () => {
   it("does not refresh while a streamed workflow remains active", () => {
     const previous = activity("generating_plan", "working", 4);
@@ -39,6 +61,24 @@ describe("shouldRefreshRunPage", () => {
     const next = activity("awaiting_plan_decision", "decision", 8);
 
     expect(shouldRefreshRunPage(previous, next)).toBe(true);
+  });
+
+  it("refreshes when an artifact finishes persisting during active work", () => {
+    const previous = activity("reviewing_plan", "working", 5);
+    previous.operations = [artifactOperation("running")];
+    const next = activity("adjudicating_plan", "working", 6);
+    next.operations = [artifactOperation("completed")];
+
+    expect(shouldRefreshRunPage(previous, next)).toBe(true);
+  });
+
+  it("does not repeatedly refresh a completed artifact", () => {
+    const previous = activity("adjudicating_plan", "working", 6);
+    previous.operations = [artifactOperation("completed")];
+    const next = activity("persisting_plan", "working", 7);
+    next.operations = [artifactOperation("completed")];
+
+    expect(shouldRefreshRunPage(previous, next)).toBe(false);
   });
 
   it("does not refresh unchanged projections", () => {
