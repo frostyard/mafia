@@ -10,9 +10,9 @@ vi.mock("next/navigation", () => ({ notFound: vi.fn() }));
 vi.mock("@/components/artifact-tabs", () => ({ ArtifactTabs: () => null }));
 vi.mock("@/components/phase-board", () => ({ PhaseBoard: () => null }));
 vi.mock("@/components/refresh-pr-status", () => ({ RefreshPrStatus: () => <span>Refresh PR status</span> }));
-vi.mock("@/components/run-agent-shell", () => ({ RunAgentShell: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
 vi.mock("@/components/run-cards", () => ({ StateBadge: () => null }));
 vi.mock("@/components/stage-timeline", () => ({ StageTimeline: () => null }));
+vi.mock("@/components/visibility-rail", () => ({ VisibilityRail: () => null }));
 vi.mock("@/components/workflow-panel", () => ({ WorkflowPanel: () => null }));
 vi.mock("@/lib/api", () => ({
   getEvidence: vi.fn(),
@@ -37,7 +37,6 @@ const run = {
   pull_request_number: null,
   primary_model: "primary",
   reviewer_model: "reviewer",
-  thread_id: "thread-1",
   state: "intake",
   version: 1,
   active_spec_revision: null,
@@ -50,6 +49,7 @@ const run = {
   updated_at: "2026-01-01T00:00:00Z",
   artifacts: [],
   phases: [],
+  pending_action: null,
 } as RunDetail;
 
 const activity = {
@@ -66,6 +66,7 @@ const activity = {
   source_sha: null,
   files_discovered: null,
   citations_found: 0,
+  pending_action: null,
   operations: [],
   events: [],
 } as RunActivity;
