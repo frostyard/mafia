@@ -1,3 +1,4 @@
+import os
 from collections.abc import AsyncGenerator
 from pathlib import Path
 from typing import Any
@@ -271,6 +272,8 @@ async def devcontainer_fixture(
     request: pytest.FixtureRequest,
     tmp_path: Path,
 ) -> AsyncGenerator[tuple[Path, ContainerEngine]]:
+    if os.environ.get("MAFIA_RUN_CONTAINER_INTEGRATION_TESTS") != "1":
+        pytest.skip("Set MAFIA_RUN_CONTAINER_INTEGRATION_TESTS=1 to run real container tests")
     engine_name = request.param
     assert engine_name in {"docker", "podman"}
     try:
