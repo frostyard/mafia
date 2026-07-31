@@ -383,7 +383,7 @@ async def test_stalled_retry_preserves_naturally_completed_state_without_retry_r
 
 
 @pytest.mark.asyncio
-async def test_reset_to_specification_preserves_thread_and_invalidates_future_work(
+async def test_reset_to_specification_does_not_rotate_thread_and_invalidates_future_work(
     operation_session_factory: OperationSessionFixture,
 ) -> None:
     factory, run_id = operation_session_factory
