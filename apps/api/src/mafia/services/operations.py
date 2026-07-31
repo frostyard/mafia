@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -18,6 +18,10 @@ logger = logging.getLogger(__name__)
 
 OperationDetailProvider = Callable[[], dict[str, Any]]
 _active_tasks: dict[str, dict[asyncio.Task[Any], int]] = {}
+
+
+class ActiveWorkError(RuntimeError):
+    pass
 
 
 def _now() -> datetime:
@@ -239,6 +243,31 @@ def _unregister_active_task(run_id: str, task: asyncio.Task[Any]) -> None:
         tasks.pop(task, None)
     if not tasks:
         _active_tasks.pop(run_id, None)
+
+
+def _finish_background_task(run_id: str, task: asyncio.Task[None]) -> None:
+    _unregister_active_task(run_id, task)
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.exception("Background work for run %s failed after recording its failure", run_id)
+
+
+def launch_background_work(
+    run_id: str,
+    worker: Callable[[], Awaitable[None]],
+) -> None:
+    if has_active_work(run_id):
+        raise ActiveWorkError(f"Run {run_id} already has active work")
+
+    async def run_worker() -> None:
+        await worker()
+
+    task = asyncio.create_task(run_worker(), name=f"run-{run_id}")
+    _register_active_task(run_id, task)
+    task.add_done_callback(lambda completed: _finish_background_task(run_id, completed))
 
 
 @asynccontextmanager
