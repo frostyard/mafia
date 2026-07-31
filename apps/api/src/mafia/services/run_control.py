@@ -126,8 +126,10 @@ async def advance_run(
         await _advance_pull_request_review(run_id)
     elif run.state in {RunState.INTAKE, RunState.GENERATING_SPEC}:
         await _generate_specification(run_id, feedback=feedback)
-    elif run.state in {RunState.GROUNDING_PLAN, RunState.REGROUNDING}:
+    elif run.state == RunState.GROUNDING_PLAN:
         await _generate_plan(run_id, feedback=feedback)
+    elif run.state == RunState.REGROUNDING:
+        await _generate_plan(run_id, feedback="Source drift requires an updated plan.")
     elif run.state == RunState.FAILED:
         await _advance_failed(run_id, feedback=feedback, phase_id=phase_id)
     else:
@@ -407,7 +409,7 @@ async def submit_decision(
             launch[0],
             lambda: _run_guarded(
                 launch[0],
-                "planning" if expected_kind == ArtifactKind.PLAN else "specification",
+                "planning" if target == RunState.GROUNDING_PLAN else "specification",
                 lambda: advance_run(launch[0], feedback=launch[1]),
             ),
         )

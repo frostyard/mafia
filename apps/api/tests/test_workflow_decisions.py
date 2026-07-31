@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from types import ModuleType
+from unittest.mock import AsyncMock
 
 import pytest
 from mafia.db.base import Base
@@ -25,6 +26,7 @@ from mafia.domain.enums import (
 from mafia.domain.schemas import DecisionSubmission
 from mafia.services import operations, run_control
 from mafia.services.artifacts import persist_artifact
+from mafia.services.runs import get_run
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -147,6 +149,9 @@ def plan(source_sha: str) -> ImplementationPlan:
 
 
 class FakeGenerator:
+    def __init__(self) -> None:
+        self.plan_feedback: str | None = None
+
     async def specification(
         self, session: AsyncSession, run: Run, snapshot: SourceSnapshot, *, feedback: str | None = None
     ) -> Artifact:
@@ -169,7 +174,8 @@ class FakeGenerator:
         *,
         feedback: str | None = None,
     ) -> Artifact:
-        del specification_artifact, feedback
+        del specification_artifact
+        self.plan_feedback = feedback
         async with run_control.SessionFactory() as session:
             current_run = await session.get(Run, run.id)
             assert current_run is not None
@@ -331,6 +337,43 @@ async def test_plan_generation_persists_action_and_audit_event(
 
 
 @pytest.mark.asyncio
+async def test_regrounding_uses_legacy_source_drift_feedback(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.REGROUNDING)
+        snapshot = await add_snapshot(session, run, "spec-r1")
+        session.add(
+            Artifact(
+                run_id=run.id,
+                source_snapshot_id=snapshot.id,
+                kind=ArtifactKind.SPECIFICATION,
+                revision=1,
+                structured_data=specification().model_dump(mode="json"),
+                rendered_markdown="# Specification",
+                model=run.primary_model,
+            )
+        )
+        run.active_spec_revision = 1
+        await session.commit()
+        run_id = run.id
+
+    async def capture(
+        session: AsyncSession, run: Run, repository: Repository, *, reason: str
+    ) -> SourceSnapshot:
+        del repository
+        return await add_snapshot(session, run, reason)
+
+    generator = FakeGenerator()
+    monkeypatch.setattr(run_control, "capture_source_snapshot", capture)
+    monkeypatch.setattr(run_control, "ArtifactGenerator", lambda: generator)
+
+    await run_control.advance_run(run_id)
+
+    assert generator.plan_feedback == "Source drift requires an updated plan."
+
+
+@pytest.mark.asyncio
 async def test_specification_accept_consumes_action_before_launching_plan(
     session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -358,12 +401,15 @@ async def test_specification_accept_consumes_action_before_launching_plan(
         action_id = pending_action_id(run)
 
     launched: list[str] = []
+    launched_work: list[Callable[[], Awaitable[None]]] = []
 
-    def record_launch(run_id: str, work: Callable[[], Awaitable[None]]) -> None:
-        del work
+    def record_launch(run_id: str, callback: Callable[[], Awaitable[None]]) -> None:
         launched.append(run_id)
+        launched_work.append(callback)
 
     monkeypatch.setattr(run_control, "launch_background_work", record_launch)
+    guarded = AsyncMock()
+    monkeypatch.setattr(run_control, "_run_guarded", guarded)
 
     await run_control.submit_decision(run.id, action_id, DecisionSubmission(action="accept"))
 
@@ -376,6 +422,10 @@ async def test_specification_accept_consumes_action_before_launching_plan(
     assert decision.decision_type == DecisionType.ACCEPT
     assert action is None
     assert launched == [run.id]
+    await launched_work[0]()
+    guarded_call = guarded.await_args
+    assert guarded_call is not None
+    assert guarded_call.args[1] == "planning"
 
 
 @pytest.mark.asyncio
@@ -493,9 +543,7 @@ async def test_invalid_artifact_action_conflicts_without_side_effects(
         await session.commit()
         action_id = pending_action_id(run)
         if mutation == "version":
-            pending_action = run.pending_action
-            assert pending_action is not None
-            pending_action.expected_run_version += 1
+            run.version += 1
         elif mutation == "artifact":
             wrong = Artifact(
                 run_id=run.id,
@@ -523,6 +571,191 @@ async def test_invalid_artifact_action_conflicts_without_side_effects(
     assert unchanged is not None and action is not None
     assert unchanged.state == RunState.AWAITING_SPEC_DECISION
     assert decisions == []
+
+
+@pytest.mark.asyncio
+async def test_persisted_plan_action_is_available_in_a_fresh_session(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.AWAITING_PLAN_DECISION)
+        snapshot = await add_snapshot(session, run, "plan-r1")
+        artifact = Artifact(
+            run_id=run.id,
+            source_snapshot_id=snapshot.id,
+            kind=ArtifactKind.PLAN,
+            revision=1,
+            structured_data=plan(snapshot.git_sha).model_dump(mode="json"),
+            rendered_markdown="# Plan",
+            model=run.primary_model,
+        )
+        session.add(artifact)
+        await session.flush()
+        run.active_plan_revision = artifact.revision
+        run.pending_action = PendingAction(
+            kind=PendingActionKind.PLAN,
+            artifact_id=artifact.id,
+            revision=artifact.revision,
+            expected_run_version=run.version,
+            payload={"prompt": "Accept the reviewed plan or refine it with feedback."},
+        )
+        await session.commit()
+        run_id = run.id
+        action_id = pending_action_id(run)
+
+    async with session_factory() as session:
+        reopened = await get_run(session, run_id)
+
+    assert reopened.pending_action is not None
+    assert reopened.pending_action.id == action_id
+    assert reopened.pending_action.kind == PendingActionKind.PLAN
+
+
+@pytest.mark.asyncio
+async def test_plan_refine_consumes_action_before_launching_generation(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.AWAITING_PLAN_DECISION)
+        snapshot = await add_snapshot(session, run, "plan-r1")
+        artifact = Artifact(
+            run_id=run.id,
+            source_snapshot_id=snapshot.id,
+            kind=ArtifactKind.PLAN,
+            revision=1,
+            structured_data=plan(snapshot.git_sha).model_dump(mode="json"),
+            rendered_markdown="# Plan",
+            model=run.primary_model,
+        )
+        session.add(artifact)
+        await session.flush()
+        run.active_plan_revision = artifact.revision
+        run.pending_action = PendingAction(
+            kind=PendingActionKind.PLAN,
+            artifact_id=artifact.id,
+            revision=artifact.revision,
+            expected_run_version=run.version,
+            payload={},
+        )
+        await session.commit()
+        action_id = pending_action_id(run)
+
+    launched: list[str] = []
+
+    def record_launch(run_id: str, work: Callable[[], Awaitable[None]]) -> None:
+        del work
+        launched.append(run_id)
+
+    monkeypatch.setattr(run_control, "launch_background_work", record_launch)
+    await run_control.submit_decision(
+        run.id, action_id, DecisionSubmission(action="refine", feedback="Add a rollback phase.")
+    )
+
+    async with session_factory() as session:
+        refined = await session.get(Run, run.id)
+        decision = await session.scalar(select(Decision).where(Decision.run_id == run.id))
+        action = await session.get(PendingAction, action_id)
+    assert refined is not None and decision is not None
+    assert refined.state == RunState.GROUNDING_PLAN
+    assert decision.feedback == "Add a rollback phase."
+    assert action is None
+    assert launched == [run.id]
+
+
+@pytest.mark.asyncio
+async def test_plan_accept_marks_ready_phase(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.AWAITING_PLAN_DECISION)
+        snapshot = await add_snapshot(session, run, "plan-r1")
+        artifact = Artifact(
+            run_id=run.id,
+            source_snapshot_id=snapshot.id,
+            kind=ArtifactKind.PLAN,
+            revision=1,
+            structured_data=plan(snapshot.git_sha).model_dump(mode="json"),
+            rendered_markdown="# Plan",
+            model=run.primary_model,
+        )
+        session.add(artifact)
+        await session.flush()
+        run.active_plan_revision = artifact.revision
+        run.pending_action = PendingAction(
+            kind=PendingActionKind.PLAN,
+            artifact_id=artifact.id,
+            revision=artifact.revision,
+            expected_run_version=run.version,
+            payload={},
+        )
+        await session.commit()
+        action_id = pending_action_id(run)
+
+    create_phase_action = AsyncMock()
+    monkeypatch.setattr(run_control, "_create_phase_pending_action", create_phase_action)
+    await run_control.submit_decision(run.id, action_id, DecisionSubmission(action="accept"))
+
+    async with session_factory() as session:
+        accepted = await session.get(Run, run.id)
+        phase = await session.scalar(select(Phase).where(Phase.run_id == run.id))
+    assert accepted is not None and phase is not None
+    assert accepted.state == RunState.READY_FOR_PHASE
+    assert phase.status == PhaseState.READY
+    create_phase_action.assert_awaited_once_with(run.id, phase.id)
+
+
+@pytest.mark.asyncio
+async def test_plan_accept_completes_when_all_phases_are_already_merged(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.AWAITING_PLAN_DECISION)
+        snapshot = await add_snapshot(session, run, "plan-r1")
+        artifact = Artifact(
+            run_id=run.id,
+            source_snapshot_id=snapshot.id,
+            kind=ArtifactKind.PLAN,
+            revision=1,
+            structured_data=plan(snapshot.git_sha).model_dump(mode="json"),
+            rendered_markdown="# Plan",
+            model=run.primary_model,
+        )
+        session.add(artifact)
+        await session.flush()
+        run.active_plan_revision = artifact.revision
+        run.pending_action = PendingAction(
+            kind=PendingActionKind.PLAN,
+            artifact_id=artifact.id,
+            revision=artifact.revision,
+            expected_run_version=run.version,
+            payload={},
+        )
+        session.add(
+            Phase(
+                run_id=run.id,
+                ordinal=1,
+                title="Merged implementation",
+                objective="Already complete",
+                dependencies=[],
+                details={},
+                status=PhaseState.MERGED,
+                plan_revision=1,
+                source_sha=snapshot.git_sha,
+                merge_sha="b" * 40,
+            )
+        )
+        await session.commit()
+        action_id = pending_action_id(run)
+
+    monkeypatch.setattr(run_control, "_create_phase_pending_action", AsyncMock())
+    await run_control.submit_decision(run.id, action_id, DecisionSubmission(action="accept"))
+
+    async with session_factory() as session:
+        completed = await session.get(Run, run.id)
+        action = await session.get(PendingAction, action_id)
+    assert completed is not None
+    assert completed.state == RunState.COMPLETED
+    assert action is None
 
 
 @pytest.mark.asyncio
