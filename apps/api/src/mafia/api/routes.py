@@ -6,6 +6,7 @@ from mafia.config import get_settings
 from mafia.db.models import Evidence, Repository, SourceSnapshot
 from mafia.db.session import get_session
 from mafia.domain.schemas import (
+    DecisionSubmission,
     EvidenceRead,
     ModelAvailability,
     ModelPair,
@@ -19,13 +20,8 @@ from mafia.domain.schemas import (
     RunRead,
     ValidationCommandRead,
 )
-from mafia.services.activity import (
-    RunControlError,
-    cancel_run,
-    get_run_activity,
-    prepare_retry,
-    reset_to_specification,
-)
+from mafia.services.activity import RunControlError as ActivityRunControlError
+from mafia.services.activity import cancel_run, get_run_activity, reset_to_specification
 from mafia.services.lifecycle import reconcile_run
 from mafia.services.operator import bind_request_operator
 from mafia.services.prerequisites import readiness
@@ -42,6 +38,7 @@ from mafia.services.repositories import (
     list_repositories,
     parse_repository,
 )
+from mafia.services.run_control import RunControlError, retry_run, start_run, submit_decision
 from mafia.services.runs import (
     ConcurrentUpdateError,
     RunNotFoundError,
@@ -252,6 +249,22 @@ async def runs_cancel(run_id: str, _: Operator) -> RunActivity:
             status_code=404,
             detail={"code": "run_not_found", "message": run_id},
         ) from error
+    except (ConcurrentUpdateError, ActivityRunControlError) as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "run_control_conflict", "message": str(error)},
+        ) from error
+
+
+@router.post("/api/runs/{run_id}/start", response_model=RunActivity)
+async def runs_start(run_id: str, _: Operator) -> RunActivity:
+    try:
+        return await start_run(run_id)
+    except RunNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "run_not_found", "message": run_id},
+        ) from error
     except (ConcurrentUpdateError, RunControlError) as error:
         raise HTTPException(
             status_code=409,
@@ -262,7 +275,28 @@ async def runs_cancel(run_id: str, _: Operator) -> RunActivity:
 @router.post("/api/runs/{run_id}/retry", response_model=RunActivity)
 async def runs_retry(run_id: str, _: Operator) -> RunActivity:
     try:
-        return await prepare_retry(run_id)
+        return await retry_run(run_id)
+    except RunNotFoundError as error:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "run_not_found", "message": run_id},
+        ) from error
+    except (ConcurrentUpdateError, RunControlError) as error:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "run_control_conflict", "message": str(error)},
+        ) from error
+
+
+@router.post("/api/runs/{run_id}/decisions/{action_id}", response_model=RunActivity)
+async def runs_submit_decision(
+    run_id: str,
+    action_id: str,
+    request: DecisionSubmission,
+    _: Operator,
+) -> RunActivity:
+    try:
+        return await submit_decision(run_id, action_id, request)
     except RunNotFoundError as error:
         raise HTTPException(
             status_code=404,
@@ -284,7 +318,7 @@ async def runs_reset_to_specification(run_id: str, _: Operator) -> RunRead:
             status_code=404,
             detail={"code": "run_not_found", "message": run_id},
         ) from error
-    except (ConcurrentUpdateError, RunControlError) as error:
+    except (ConcurrentUpdateError, ActivityRunControlError) as error:
         raise HTTPException(
             status_code=409,
             detail={"code": "run_control_conflict", "message": str(error)},

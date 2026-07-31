@@ -24,7 +24,7 @@ from mafia.domain.enums import (
     PhaseState,
     RunState,
 )
-from mafia.domain.schemas import ActivityEventRead, OperationRead, RunActivity
+from mafia.domain.schemas import ActivityEventRead, OperationRead, PendingActionRead, RunActivity
 from mafia.domain.state_machine import require_transition
 from mafia.services.operations import cancel_active_work, has_active_work
 from mafia.services.repositories import RepositoryIdentity, require_repository_owner
@@ -74,7 +74,7 @@ def _utc(value: datetime) -> datetime:
 
 
 def _status(
-    state: RunState,
+    run: Run,
 ) -> tuple[
     Literal["idle", "working", "decision", "external", "failed", "cancelled", "completed"],
     str,
@@ -115,21 +115,32 @@ def _status(
         RunState.CANCELLED: "The workflow was cancelled.",
         RunState.COMPLETED: "The workflow completed.",
     }
-    if state in WORKING_STATES:
+    pending_action = run.pending_action
+    if pending_action is not None:
+        message_key = (
+            "message"
+            if pending_action.kind == PendingActionKind.CONFIGURATION_REQUIRED
+            else "prompt"
+        )
+        message = pending_action.payload.get(message_key)
+        if isinstance(message, str):
+            return "decision", message
+        return "decision", messages[run.state]
+    if run.state in WORKING_STATES:
         mode = "working"
-    elif state in DECISION_STATES:
+    elif run.state in DECISION_STATES:
         mode = "decision"
-    elif state == RunState.WAITING_FOR_MERGE:
+    elif run.state == RunState.WAITING_FOR_MERGE:
         mode = "external"
-    elif state == RunState.FAILED:
+    elif run.state == RunState.FAILED:
         mode = "failed"
-    elif state == RunState.CANCELLED:
+    elif run.state == RunState.CANCELLED:
         mode = "cancelled"
-    elif state == RunState.COMPLETED:
+    elif run.state == RunState.COMPLETED:
         mode = "completed"
     else:
         mode = "idle"
-    return mode, messages[state]
+    return mode, messages[run.state]
 
 
 async def get_run_activity(run_id: str) -> RunActivity:
@@ -189,7 +200,7 @@ async def get_run_activity(run_id: str) -> RunActivity:
             else None
         )
     )
-    mode, message = _status(run.state)
+    mode, message = _status(run)
     operation_reads = [
         OperationRead(
             id=operation.id,
@@ -239,6 +250,11 @@ async def get_run_activity(run_id: str) -> RunActivity:
             len(snapshot.manifest.get("files", [])) if snapshot is not None else None
         ),
         citations_found=citations_found,
+        pending_action=(
+            PendingActionRead.model_validate(run.pending_action)
+            if run.pending_action is not None
+            else None
+        ),
         operations=operation_reads,
         events=[ActivityEventRead.model_validate(event) for event in events],
     )

@@ -241,6 +241,7 @@ class RunActivity(BaseModel):
     source_sha: str | None
     files_discovered: int | None
     citations_found: int
+    pending_action: PendingActionRead | None
     operations: list[OperationRead]
     events: list[ActivityEventRead]
 
