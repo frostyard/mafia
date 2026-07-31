@@ -1040,7 +1040,11 @@ async def test_retry_restores_durable_pr_review_action_once(
         await session.commit()
 
     launched: list[Callable[[], Awaitable[None]]] = []
-    monkeypatch.setattr(run_control, "launch_background_work", lambda _run_id, work: launched.append(work))
+
+    def record_launch(_run_id: str, work: Callable[[], Awaitable[None]]) -> None:
+        launched.append(work)
+
+    monkeypatch.setattr(run_control, "launch_background_work", record_launch)
     await run_control.retry_run(run.id)
     assert len(launched) == 1
     await launched[0]()
@@ -1082,7 +1086,11 @@ async def test_pull_request_review_post_launches_after_consuming_action(
         action_id = pending_action_id(run)
 
     launched: list[Callable[[], Awaitable[None]]] = []
-    monkeypatch.setattr(run_control, "launch_background_work", lambda _run_id, work: launched.append(work))
+
+    def record_launch(_run_id: str, work: Callable[[], Awaitable[None]]) -> None:
+        launched.append(work)
+
+    monkeypatch.setattr(run_control, "launch_background_work", record_launch)
     await run_control.submit_decision(run.id, action_id, DecisionSubmission(action="post"))
 
     async with session_factory() as session:
@@ -1123,7 +1131,11 @@ async def test_pull_request_review_post_worker_completes_run(
         await session.commit()
         action_id = pending_action_id(run)
     launched: list[Callable[[], Awaitable[None]]] = []
-    monkeypatch.setattr(run_control, "launch_background_work", lambda _run_id, work: launched.append(work))
+
+    def record_launch(_run_id: str, work: Callable[[], Awaitable[None]]) -> None:
+        launched.append(work)
+
+    monkeypatch.setattr(run_control, "launch_background_work", record_launch)
     monkeypatch.setattr(
         run_control, "post_pull_request_comment", AsyncMock(return_value="https://example.test/comment")
     )
@@ -1167,7 +1179,11 @@ async def test_pull_request_review_post_failure_is_retryable(
         await session.commit()
         action_id = pending_action_id(run)
     launched: list[Callable[[], Awaitable[None]]] = []
-    monkeypatch.setattr(run_control, "launch_background_work", lambda _run_id, work: launched.append(work))
+
+    def record_launch(_run_id: str, work: Callable[[], Awaitable[None]]) -> None:
+        launched.append(work)
+
+    monkeypatch.setattr(run_control, "launch_background_work", record_launch)
     monkeypatch.setattr(
         run_control, "post_pull_request_comment", AsyncMock(side_effect=RuntimeError("transient"))
     )
