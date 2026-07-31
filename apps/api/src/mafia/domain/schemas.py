@@ -1,7 +1,13 @@
 from datetime import datetime
 from typing import Any, Literal
 
-from mafia.domain.enums import OperationStatus, RequirementType, RunState, WorkflowType
+from mafia.domain.enums import (
+    OperationStatus,
+    PendingActionKind,
+    RequirementType,
+    RunState,
+    WorkflowType,
+)
 from pydantic import BaseModel, Field, model_validator
 
 
@@ -81,7 +87,6 @@ class RunRead(BaseModel):
     pull_request_number: int | None
     primary_model: str
     reviewer_model: str
-    thread_id: str
     state: RunState
     version: int
     active_spec_revision: int | None
@@ -149,9 +154,37 @@ class EvidenceRead(BaseModel):
     created_at: datetime
 
 
+class PendingActionRead(BaseModel):
+    id: str
+    kind: PendingActionKind
+    expected_run_version: int
+    artifact_id: str | None
+    phase_id: str | None
+    revision: int | None
+    payload: dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
 class RunDetail(RunRead):
     artifacts: list[ArtifactRead]
     phases: list[PhaseRead]
+    pending_action: PendingActionRead | None
+
+
+class DecisionSubmission(BaseModel):
+    action: Literal["accept", "refine", "start", "cancel", "post", "finish", "check_again"]
+    feedback: str | None = Field(default=None, max_length=100_000)
+
+    @model_validator(mode="after")
+    def valid_feedback(self) -> "DecisionSubmission":
+        if self.action == "refine" and not (self.feedback and self.feedback.strip()):
+            raise ValueError("Refinement feedback is required")
+        if self.action != "refine" and self.feedback is not None:
+            raise ValueError("Feedback is only valid for refinement")
+        return self
 
 
 class OperationRead(BaseModel):

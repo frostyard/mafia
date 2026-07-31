@@ -40,6 +40,14 @@ class WorkflowType(StrEnum):
     PULL_REQUEST_REVIEW = "pull_request_review"
 
 
+class PendingActionKind(StrEnum):
+    SPECIFICATION = "specification"
+    PLAN = "plan"
+    PHASE = "phase"
+    PULL_REQUEST_REVIEW = "pull_request_review"
+    CONFIGURATION_REQUIRED = "configuration_required"
+
+
 class ArtifactKind(StrEnum):
     SPECIFICATION = "specification"
     PLAN = "plan"

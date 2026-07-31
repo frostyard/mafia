@@ -7,6 +7,7 @@ from mafia.db.base import Base, TimestampMixin
 from mafia.domain.enums import (
     ArtifactKind,
     DecisionType,
+    PendingActionKind,
     PhaseState,
     RequirementType,
     RunState,
@@ -78,7 +79,6 @@ class Run(Base, TimestampMixin):
     pull_request_number: Mapped[int | None] = mapped_column(Integer)
     primary_model: Mapped[str] = mapped_column(String(100))
     reviewer_model: Mapped[str] = mapped_column(String(100))
-    thread_id: Mapped[str] = mapped_column(String(255), unique=True, default=new_id)
     state: Mapped[RunState] = mapped_column(
         Enum(
             RunState,
@@ -99,6 +99,9 @@ class Run(Base, TimestampMixin):
     repository: Mapped[Repository] = relationship(back_populates="runs")
     artifacts: Mapped[list["Artifact"]] = relationship(back_populates="run", cascade="all, delete-orphan")
     phases: Mapped[list["Phase"]] = relationship(back_populates="run", cascade="all, delete-orphan")
+    pending_action: Mapped["PendingAction | None"] = relationship(
+        back_populates="run", uselist=False, cascade="all, delete-orphan"
+    )
 
 
 class SourceSnapshot(Base, TimestampMixin):
@@ -153,6 +156,25 @@ class Artifact(Base, TimestampMixin):
 
     run: Mapped[Run] = relationship(back_populates="artifacts")
     __table_args__ = (UniqueConstraint("run_id", "kind", "revision"),)
+
+
+class PendingAction(Base, TimestampMixin):
+    __tablename__ = "pending_actions"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("runs.id", ondelete="CASCADE"), unique=True, index=True
+    )
+    kind: Mapped[PendingActionKind] = mapped_column(
+        Enum(PendingActionKind, values_callable=enum_values, native_enum=False, length=40)
+    )
+    expected_run_version: Mapped[int] = mapped_column(Integer)
+    artifact_id: Mapped[str | None] = mapped_column(ForeignKey("artifacts.id", ondelete="CASCADE"))
+    phase_id: Mapped[str | None] = mapped_column(ForeignKey("phases.id", ondelete="CASCADE"))
+    revision: Mapped[int | None] = mapped_column(Integer)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    run: Mapped[Run] = relationship(back_populates="pending_action")
 
 
 class Decision(Base):
@@ -253,16 +275,6 @@ class AuditEvent(Base):
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     actor: Mapped[str] = mapped_column(String(100), default=current_actor)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-
-
-class AGUISnapshot(Base, TimestampMixin):
-    __tablename__ = "agui_snapshots"
-
-    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
-    scope: Mapped[str] = mapped_column(String(255))
-    thread_id: Mapped[str] = mapped_column(String(255))
-    snapshot: Mapped[dict[str, Any]] = mapped_column(JSON)
-    __table_args__ = (UniqueConstraint("scope", "thread_id"),)
 
 
 class RepositoryLock(Base):
