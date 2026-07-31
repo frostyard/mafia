@@ -1,4 +1,7 @@
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 
 import httpx
@@ -90,8 +93,40 @@ def test_deployment_guides_use_current_release_paths_for_destructive_upgrade() -
     ):
         source = path.read_text()
         assert "/opt/mafia/current/bin/reset-data" in source
-        assert "/opt/mafia/current/.venv/bin/python" in source
-        assert "/opt/mafia/current/alembic.ini" in source
+        assert (
+            "sudo -u mafia bash -c 'cd /opt/mafia/current && "
+            "MAFIA_DATA_DIR=/var/lib/mafia ./.venv/bin/python -m alembic "
+            "-c alembic.ini upgrade head'"
+        ) in source
+
+
+def test_alembic_requires_release_root_for_relative_paths(tmp_path: Path) -> None:
+    repository_root = Path.cwd()
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    environment = {**os.environ, "MAFIA_DATA_DIR": str(data_dir)}
+    command = [sys.executable, "-m", "alembic", "-c", str(repository_root / "alembic.ini")]
+
+    outside_result = subprocess.run(
+        [*command, "heads"],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert outside_result.returncode != 0
+    assert "Path doesn't exist: apps/api/migrations" in (
+        outside_result.stdout + outside_result.stderr
+    )
+
+    inside_result = subprocess.run(
+        [*command, "upgrade", "head"],
+        cwd=repository_root,
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert inside_result.returncode == 0, inside_result.stderr
 
 
 def test_repository_has_no_legacy_workflow_control_plane_surfaces() -> None:

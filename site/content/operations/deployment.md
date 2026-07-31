@@ -62,7 +62,7 @@ starts a blocking API process after applying migrations.
 ```bash
 sudo systemctl stop mafia.target
 sudo -u mafia env MAFIA_DATA_DIR=/var/lib/mafia /opt/mafia/current/bin/reset-data --confirm-destructive-reset
-sudo -u mafia env MAFIA_DATA_DIR=/var/lib/mafia /opt/mafia/current/.venv/bin/python -m alembic -c /opt/mafia/current/alembic.ini upgrade head
+sudo -u mafia bash -c 'cd /opt/mafia/current && MAFIA_DATA_DIR=/var/lib/mafia ./.venv/bin/python -m alembic -c alembic.ini upgrade head'
 sudo systemctl start mafia.target
 ```
 
