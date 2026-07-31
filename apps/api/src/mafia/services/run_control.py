@@ -245,6 +245,14 @@ async def _advance_pull_request_review(run_id: str) -> None:
 
 
 async def _review_pull_request(run_id: str) -> None:
+    await _run_guarded(
+        run_id,
+        "pull_request_review",
+        lambda: _review_pull_request_inner(run_id),
+    )
+
+
+async def _review_pull_request_inner(run_id: str) -> None:
     async with SessionFactory() as session:
         run = await get_run(session, run_id)
         if run.pull_request_number is None:

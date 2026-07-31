@@ -1,5 +1,4 @@
-# pyright: reportPrivateUsage=false
-
+import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from types import ModuleType
@@ -1125,19 +1124,34 @@ async def test_pull_request_validation_failure_prevents_model_review_and_fails_g
     )
     monkeypatch.setattr(run_control, "run_deterministic_validation", fail_validation, raising=False)
 
-    await run_control._run_guarded(
-        run.id,
-        "pull_request_review",
-        lambda: run_control.advance_run(run.id),
-    )
+    completed = asyncio.Event()
+
+    def launch(run_id: str, work: Callable[[], Awaitable[None]]) -> None:
+        async def observe_completion() -> None:
+            try:
+                await work()
+            finally:
+                completed.set()
+
+        operations.launch_background_work(run_id, observe_completion)
+
+    monkeypatch.setattr(run_control, "launch_background_work", launch)
+    await run_control.start_run(run.id)
+    await asyncio.wait_for(completed.wait(), timeout=1)
 
     async with session_factory() as session:
         failed = await get_run(session, run.id)
+        failures = list(
+            await session.scalars(
+                select(AuditEvent).where(AuditEvent.run_id == run.id, AuditEvent.event_type.like("%.failed"))
+            )
+        )
     assert calls == ["validation", "close"]
     assert command.await_args_list[-2].args[0][-2:] == ("--hard", "b" * 40)
     assert command.await_args_list[-1].args[0][-2:] == ("clean", "-fdx")
     assert failed.state == RunState.FAILED
     assert failed.failure_code == "pull_request_review_failed"
+    assert [event.event_type for event in failures] == ["pull_request_review.failed"]
 
 
 @pytest.mark.asyncio
