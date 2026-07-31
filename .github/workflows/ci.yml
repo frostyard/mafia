@@ -32,8 +32,12 @@ jobs:
           enable-cache: true
       - name: Install dependencies
         run: uv sync --frozen
-      - name: Run API checks
-        run: npm run check:api
+      - name: Run Ruff
+        run: uv run --frozen ruff check apps/api/src apps/api/tests
+      - name: Run Pyright
+        run: uv run --frozen pyright
+      - name: Run API tests
+        run: uv run --frozen pytest -q
 
   web:
     name: Web / Node 22
