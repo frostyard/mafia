@@ -9,7 +9,7 @@
     "bundle": "bash scripts/build-release.sh",
     "check": "npm run check:api && npm run check:web && npm run check:site && npm run check:scripts",
     "check:api": "uv run --frozen ruff check apps/api/src apps/api/tests && uv run --frozen pyright && uv run --frozen pytest -q",
-    "check:scripts": "bash -n scripts/build-release.sh packaging/bin/install packaging/bin/api packaging/bin/web contrib/start.sh",
+    "check:scripts": "bash -n scripts/build-release.sh packaging/bin/install packaging/bin/api packaging/bin/web packaging/bin/reset-data contrib/start.sh",
     "check:site": "npm test --prefix site",
     "check:web": "npm run lint --prefix apps/web -- --quiet && npm run typecheck --prefix apps/web && npm test --prefix apps/web -- --run && npm run build --prefix apps/web",
     "build:site": "npm run build --prefix site",

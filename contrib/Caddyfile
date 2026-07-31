@@ -9,8 +9,7 @@
 	}
 
 	@auth path /auth/*
-	@copilotkit path /api/copilotkit /api/copilotkit/*
-	@api path /api/* /ag-ui /ag-ui/* /readyz
+	@api path /api/* /readyz
 
 	handle @auth {
 		reverse_proxy 127.0.0.1:3000
@@ -23,10 +22,7 @@
 		}
 
 		route {
-			reverse_proxy @copilotkit 127.0.0.1:3000
-			reverse_proxy @api 127.0.0.1:8000 {
-				flush_interval -1
-			}
+			reverse_proxy @api 127.0.0.1:8000
 			reverse_proxy 127.0.0.1:3000
 		}
 	}
