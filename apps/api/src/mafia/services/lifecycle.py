@@ -15,7 +15,13 @@ from mafia.services.repositories import (
     RepositoryIdentity,
     require_repository_owner,
 )
-from mafia.services.runs import get_run, transition_run
+from mafia.services.run_control import phase_pending_action
+from mafia.services.runs import (
+    PendingActionSpec,
+    get_run,
+    transition_run,
+    transition_with_pending_action,
+)
 from mafia.services.workspaces import WorkspaceService, reset_and_verify_origin
 from sqlalchemy import delete, select
 
@@ -436,6 +442,7 @@ async def _reconcile_run(run_id: str) -> dict[str, Any]:
             )
         )
         material_drift = bool(external_changes) and _touches_planned_files(external_changes, remaining)
+        pending_action = None
         if material_drift:
             next_state = RunState.REGROUNDING
             event_type = "source.material_drift_detected"
@@ -445,24 +452,43 @@ async def _reconcile_run(run_id: str) -> dict[str, Any]:
             next_phase.source_sha = default_sha
             next_state = RunState.READY_FOR_PHASE
             event_type = "phase.ready"
+            pending_action = await phase_pending_action(
+                run, next_phase, expected_run_version=run.version + 1
+            )
         else:
             next_state = RunState.COMPLETED
             event_type = "run.completed"
-        await session.commit()
-        run = await transition_run(
-            session,
-            run.id,
-            next_state,
-            expected_version=run.version,
-            event_type=event_type,
-            payload={
-                "merged_phase_id": phase.id,
-                "merge_sha": merge_sha,
-                "default_branch": metadata.default_branch,
-                "default_sha": default_sha,
-                "external_changes": sorted(external_changes),
-            },
-        )
+        transition_payload: dict[str, object] = {
+            "merged_phase_id": phase.id,
+            "merge_sha": merge_sha,
+            "default_branch": metadata.default_branch,
+            "default_sha": default_sha,
+            "external_changes": sorted(external_changes),
+        }
+        if pending_action is None:
+            await session.commit()
+            run = await transition_run(
+                session,
+                run.id,
+                next_state,
+                expected_version=run.version,
+                event_type=event_type,
+                payload=transition_payload,
+            )
+        else:
+            run = await transition_with_pending_action(
+                session,
+                run.id,
+                next_state,
+                expected_version=run.version,
+                event_type=event_type,
+                pending=PendingActionSpec(
+                    kind=pending_action.kind,
+                    phase_id=pending_action.phase_id,
+                    payload=pending_action.payload,
+                ),
+                payload=transition_payload,
+            )
         worktree_path = phase.worktree_path
         cache_path = run.repository.cache_path
 

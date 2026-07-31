@@ -56,5 +56,5 @@ async def test_execute_phase_raises_typed_error_when_phase_is_not_ready(
 
     with pytest.raises(PhaseNotReadyError):
         await execution._execute_phase(  # pyright: ignore[reportPrivateUsage]
-            "run-1", "phase-1", AsyncMock()
+            "run-1", "phase-1"
         )

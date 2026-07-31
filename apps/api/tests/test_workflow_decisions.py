@@ -691,17 +691,18 @@ async def test_plan_accept_marks_ready_phase(
         await session.commit()
         action_id = pending_action_id(run)
 
-    create_phase_action = AsyncMock()
-    monkeypatch.setattr(run_control, "_create_phase_pending_action", create_phase_action)
+    monkeypatch.setattr(run_control, "source_validation_status", AsyncMock(return_value=(True, "repository")))
     await run_control.submit_decision(run.id, action_id, DecisionSubmission(action="accept"))
 
     async with session_factory() as session:
         accepted = await session.get(Run, run.id)
         phase = await session.scalar(select(Phase).where(Phase.run_id == run.id))
-    assert accepted is not None and phase is not None
+        action = await session.scalar(select(PendingAction).where(PendingAction.run_id == run.id))
+    assert accepted is not None and phase is not None and action is not None
     assert accepted.state == RunState.READY_FOR_PHASE
     assert phase.status == PhaseState.READY
-    create_phase_action.assert_awaited_once_with(run.id, phase.id)
+    assert action.kind == PendingActionKind.PHASE
+    assert action.phase_id == phase.id
 
 
 @pytest.mark.asyncio
@@ -747,7 +748,6 @@ async def test_plan_accept_completes_when_all_phases_are_already_merged(
         await session.commit()
         action_id = pending_action_id(run)
 
-    monkeypatch.setattr(run_control, "_create_phase_pending_action", AsyncMock())
     await run_control.submit_decision(run.id, action_id, DecisionSubmission(action="accept"))
 
     async with session_factory() as session:

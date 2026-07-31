@@ -1,3 +1,4 @@
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from mafia.services.project_config import (
     read_host_project_configuration,
     resolve_project_configuration,
     resolve_project_configuration_content,
+    source_validation_status,
     write_host_project_configuration,
 )
 from mafia.services.repositories import RepositoryIdentity
@@ -20,6 +22,40 @@ name = "Checks"
 run = "npm run check"
 timeout_seconds = 1200
 """.strip()
+
+
+@pytest.fixture
+def cache_without_repository_config(tmp_path: Path) -> tuple[Path, str]:
+    repository = tmp_path / "repository"
+    cache = tmp_path / "cache.git"
+    repository.mkdir()
+    subprocess.run(("git", "init"), cwd=repository, check=True, capture_output=True)
+    subprocess.run(
+        ("git", "config", "user.email", "test@example.com"),
+        cwd=repository,
+        check=True,
+    )
+    subprocess.run(
+        ("git", "config", "user.name", "Test"),
+        cwd=repository,
+        check=True,
+    )
+    (repository / "README.md").write_text("test\n", encoding="utf-8")
+    subprocess.run(("git", "add", "README.md"), cwd=repository, check=True)
+    subprocess.run(("git", "commit", "-m", "initial"), cwd=repository, check=True)
+    source_sha = subprocess.run(
+        ("git", "rev-parse", "HEAD"),
+        cwd=repository,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    subprocess.run(
+        ("git", "clone", "--bare", str(repository), str(cache)),
+        check=True,
+        capture_output=True,
+    )
+    return cache, source_sha
 
 
 def test_repository_configuration_cannot_select_host_execution() -> None:
@@ -113,3 +149,27 @@ def test_default_host_configuration_has_no_validation(tmp_path: Path) -> None:
     assert configuration.validation is None
     assert configured is False
     assert '[execution]\nmode = "isolated"' in content
+
+
+@pytest.mark.asyncio
+async def test_source_validation_uses_host_when_config_exists_only_on_disk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    cache_without_repository_config: tuple[Path, str],
+) -> None:
+    settings = Settings(data_dir=tmp_path / "data")
+    identity = RepositoryIdentity("octo", "repo")
+    cache, source_sha = cache_without_repository_config
+    write_host_project_configuration(identity, REPOSITORY_CONFIG, settings)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".mafia.toml").write_text(REPOSITORY_CONFIG, encoding="utf-8")
+
+    available, source = await source_validation_status(
+        identity,
+        str(cache),
+        source_sha,
+        settings,
+    )
+
+    assert available is True
+    assert source == "host"

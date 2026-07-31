@@ -17,6 +17,8 @@ from mafia.domain.schemas import DecisionSubmission, RunActivity
 from mafia.domain.state_machine import ALLOWED_TRANSITIONS, require_transition
 from mafia.services.artifacts import ArtifactGenerator
 from mafia.services.operations import has_active_work, launch_background_work, tracked_operation
+from mafia.services.project_config import source_validation_status
+from mafia.services.repositories import RepositoryIdentity
 from mafia.services.runs import (
     PendingActionSpec,
     get_run,
@@ -24,7 +26,7 @@ from mafia.services.runs import (
     transition_with_pending_action,
 )
 from mafia.services.source import capture_source_snapshot
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
@@ -345,76 +347,101 @@ async def submit_decision(
     payload: DecisionSubmission,
 ) -> RunActivity:
     launch: tuple[str, str | None] | None = None
+    launch_stage: str | None = None
     phase_id: str | None = None
+    start_phase = False
     async with SessionFactory() as session:
         run = await get_run(session, run_id)
         action = await session.get(PendingAction, pending_action_id)
-        expected_kind, active_revision = _validate_artifact_action(
-            run, action, run_id, pending_action_id, payload
-        )
-        if action is None or action.artifact_id is None:
-            raise RunControlError("Artifact decision action has no artifact")
-        artifact = await session.get(Artifact, action.artifact_id)
-        if (
-            artifact is None
-            or artifact.run_id != run.id
-            or artifact.kind != expected_kind
-            or artifact.revision != action.revision
-            or artifact.revision != active_revision
-        ):
-            raise RunControlError("Artifact decision does not match the active artifact")
-
-        if payload.action == "cancel":
-            target = RunState.CANCELLED
-            event_type = "run.cancelled"
-        elif expected_kind == ArtifactKind.SPECIFICATION:
-            target = RunState.GENERATING_SPEC if payload.action == "refine" else RunState.GROUNDING_PLAN
-            event_type = (
-                "specification.refinement_started" if payload.action == "refine" else "specification.accepted"
-            )
-            launch = (run.id, payload.feedback if payload.action == "refine" else None)
+        if action is not None and action.kind in {
+            PendingActionKind.PHASE,
+            PendingActionKind.CONFIGURATION_REQUIRED,
+        }:
+            phase_id, start_phase = await _submit_phase_decision(session, run, action, payload)
+            await session.commit()
         else:
-            target, event_type, launch = await _accept_plan(session, run, artifact, payload)
+            expected_kind, active_revision = _validate_artifact_action(
+                run, action, run_id, pending_action_id, payload
+            )
+            if action is None or action.artifact_id is None:
+                raise RunControlError("Artifact decision action has no artifact")
+            artifact = await session.get(Artifact, action.artifact_id)
+            if (
+                artifact is None
+                or artifact.run_id != run.id
+                or artifact.kind != expected_kind
+                or artifact.revision != action.revision
+                or artifact.revision != active_revision
+            ):
+                raise RunControlError("Artifact decision does not match the active artifact")
 
-        session.add(
-            Decision(
-                run_id=run.id,
-                artifact_id=artifact.id,
-                decision_type=DecisionType(payload.action),
-                feedback=payload.feedback,
+            if payload.action == "cancel":
+                target = RunState.CANCELLED
+                event_type = "run.cancelled"
+            elif expected_kind == ArtifactKind.SPECIFICATION:
+                target = (
+                    RunState.GENERATING_SPEC
+                    if payload.action == "refine"
+                    else RunState.GROUNDING_PLAN
+                )
+                event_type = (
+                    "specification.refinement_started"
+                    if payload.action == "refine"
+                    else "specification.accepted"
+                )
+                launch = (run.id, payload.feedback if payload.action == "refine" else None)
+                launch_stage = "specification" if payload.action == "refine" else "planning"
+            else:
+                target, event_type, launch = await _accept_plan(session, run, artifact, payload)
+                launch_stage = "planning"
+
+            session.add(
+                Decision(
+                    run_id=run.id,
+                    artifact_id=artifact.id,
+                    decision_type=DecisionType(payload.action),
+                    feedback=payload.feedback,
+                )
             )
-        )
-        await session.delete(action)
-        _, current = await _transition_without_commit(session, run.id, target, expected_version=run.version)
-        session.add(
-            AuditEvent(
-                run_id=run.id,
-                event_type=event_type,
-                from_state=current.value,
-                to_state=target.value,
-                payload={"revision": artifact.revision},
+            await session.delete(action)
+            _, current = await _transition_without_commit(
+                session, run.id, target, expected_version=run.version
             )
-        )
-        if target == RunState.READY_FOR_PHASE:
-            phase = await session.scalar(
-                select(Phase).where(Phase.run_id == run.id, Phase.status == PhaseState.READY)
+            session.add(
+                AuditEvent(
+                    run_id=run.id,
+                    event_type=event_type,
+                    from_state=current.value,
+                    to_state=target.value,
+                    payload={"revision": artifact.revision},
+                )
             )
-            if phase is None:
-                raise RunControlError("Accepted plan has no ready phase")
-            phase_id = phase.id
-        await session.commit()
+            if target == RunState.READY_FOR_PHASE:
+                phase = await session.scalar(
+                    select(Phase).where(Phase.run_id == run.id, Phase.status == PhaseState.READY)
+                )
+                if phase is None:
+                    raise RunControlError("Accepted plan has no ready phase")
+                phase_id = phase.id
+                session.add(await phase_pending_action(run, phase, expected_run_version=run.version + 1))
+            await session.commit()
 
     if launch is not None:
         launch_background_work(
             launch[0],
             lambda: _run_guarded(
                 launch[0],
-                "planning" if target == RunState.GROUNDING_PLAN else "specification",
+                launch_stage or "workflow",
                 lambda: advance_run(launch[0], feedback=launch[1]),
             ),
         )
-    elif phase_id is not None:
-        await _create_phase_pending_action(run_id, phase_id)
+    elif start_phase and phase_id is not None:
+        from mafia.services.execution import execute_phase
+
+        launch_background_work(
+            run_id,
+            lambda: _run_guarded(run_id, "phase", lambda: execute_phase(run_id, phase_id)),
+        )
     from mafia.services.activity import get_run_activity
 
     return await get_run_activity(run_id)
@@ -543,6 +570,99 @@ async def _accept_plan(
     return RunState.READY_FOR_PHASE, "plan.accepted", None
 
 
-async def _create_phase_pending_action(run_id: str, phase_id: str) -> None:
-    """Task 4 replaces this boundary with durable phase-action creation."""
-    logger.info("Phase %s for run %s is ready for Task 4 action creation", phase_id, run_id)
+async def phase_pending_action(
+    run: Run,
+    phase: Phase,
+    *,
+    expected_run_version: int,
+) -> PendingAction:
+    identity = RepositoryIdentity(run.repository.owner, run.repository.name)
+    validation_available, _ = await source_validation_status(
+        identity, run.repository.cache_path, phase.source_sha
+    )
+    if validation_available:
+        return PendingAction(
+            run_id=run.id,
+            kind=PendingActionKind.PHASE,
+            phase_id=phase.id,
+            expected_run_version=expected_run_version,
+            payload={"prompt": f"Start phase {phase.ordinal}: {phase.title}."},
+        )
+    return PendingAction(
+        run_id=run.id,
+        kind=PendingActionKind.CONFIGURATION_REQUIRED,
+        phase_id=phase.id,
+        expected_run_version=expected_run_version,
+        payload={
+            "message": (
+                f"Phase {phase.ordinal} cannot start until deterministic validation is configured "
+                f"for {identity.slug}."
+            ),
+            "project_id": run.repository_id,
+            "project_href": f"/projects/{run.repository_id}",
+        },
+    )
+
+
+async def create_phase_pending_action(run_id: str, phase_id: str) -> None:
+    async with SessionFactory() as session:
+        run = await get_run(session, run_id)
+        phase = await session.get(Phase, phase_id)
+        if (
+            phase is None
+            or phase.run_id != run.id
+            or run.state != RunState.READY_FOR_PHASE
+            or phase.status != PhaseState.READY
+        ):
+            raise RunControlError("Phase is not ready for an action")
+        await session.execute(delete(PendingAction).where(PendingAction.run_id == run.id))
+        session.add(await phase_pending_action(run, phase, expected_run_version=run.version))
+        await session.commit()
+
+
+async def _submit_phase_decision(
+    session: AsyncSession,
+    run: Run,
+    action: PendingAction,
+    payload: DecisionSubmission,
+) -> tuple[str | None, bool]:
+    phase = await session.get(Phase, action.phase_id) if action.phase_id is not None else None
+    if (
+        action.run_id != run.id
+        or action.expected_run_version != run.version
+        or run.state != RunState.READY_FOR_PHASE
+        or phase is None
+        or phase.run_id != run.id
+        or phase.status != PhaseState.READY
+    ):
+        raise RunControlError("Pending phase action is stale")
+    if action.kind == PendingActionKind.CONFIGURATION_REQUIRED:
+        if payload.action == "check_again":
+            await session.delete(action)
+            await session.flush()
+            session.add(await phase_pending_action(run, phase, expected_run_version=run.version))
+            return phase.id, False
+        if payload.action != "cancel":
+            raise RunControlError("Configuration action requires Check again or Cancel")
+    elif payload.action == "start":
+        session.add(
+            Decision(run_id=run.id, phase_id=phase.id, decision_type=DecisionType.START_PHASE)
+        )
+        await session.delete(action)
+        return phase.id, True
+    elif payload.action != "cancel":
+        raise RunControlError("Phase action requires Start or Cancel")
+    session.add(Decision(run_id=run.id, phase_id=phase.id, decision_type=DecisionType.CANCEL))
+    await session.delete(action)
+    _, current = await _transition_without_commit(
+        session, run.id, RunState.CANCELLED, expected_version=run.version
+    )
+    session.add(
+        AuditEvent(
+            run_id=run.id,
+            event_type="run.cancelled",
+            from_state=current.value,
+            to_state=RunState.CANCELLED.value,
+        )
+    )
+    return phase.id, False

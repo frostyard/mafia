@@ -1328,7 +1328,7 @@ class RunWorkflowExecutor(Executor):
         from mafia.services.execution import PhaseNotReadyError, execute_phase
 
         try:
-            await execute_phase(original_request.run_id, original_request.phase_id, ctx)
+            await execute_phase(original_request.run_id, original_request.phase_id)
         except PhaseNotReadyError:
             async with SessionFactory() as session:
                 run = await get_run(session, original_request.run_id)

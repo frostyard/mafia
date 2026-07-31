@@ -1,16 +1,15 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Literal
-from uuid import uuid4
 
 from mafia.config import get_settings
 from mafia.db.models import (
-    AGUISnapshot,
     Artifact,
     AuditEvent,
     Decision,
     Evidence,
     Operation,
+    PendingAction,
     Phase,
     RepositoryLock,
     Run,
@@ -21,6 +20,7 @@ from mafia.domain.enums import (
     ArtifactKind,
     DecisionType,
     OperationStatus,
+    PendingActionKind,
     PhaseState,
     RunState,
 )
@@ -392,15 +392,12 @@ async def reset_to_specification(run_id: str) -> Run:
             raise RunControlError("The active specification artifact is missing")
         require_transition(run.state, RunState.AWAITING_SPEC_DECISION)
         previous_state = run.state
-        previous_thread_id = run.thread_id
-        next_thread_id = str(uuid4())
         updated_id = await session.scalar(
             update(Run)
             .where(Run.id == run.id, Run.version == run.version)
             .values(
                 state=RunState.AWAITING_SPEC_DECISION,
                 version=run.version + 1,
-                thread_id=next_thread_id,
                 active_plan_revision=None,
                 failure_code=None,
                 failure_message=None,
@@ -435,6 +432,17 @@ async def reset_to_specification(run_id: str) -> Run:
                 decision_type=DecisionType.RESET_SPECIFICATION,
             )
         )
+        await session.execute(delete(PendingAction).where(PendingAction.run_id == run.id))
+        session.add(
+            PendingAction(
+                run_id=run.id,
+                kind=PendingActionKind.SPECIFICATION,
+                artifact_id=specification.id,
+                revision=specification.revision,
+                expected_run_version=run.version + 1,
+                payload={"prompt": "Accept this specification or refine it with feedback."},
+            )
+        )
         session.add(
             AuditEvent(
                 run_id=run.id,
@@ -445,13 +453,8 @@ async def reset_to_specification(run_id: str) -> Run:
                     "specification_revision": run.active_spec_revision,
                     "invalidated_phase_ordinals": sorted(invalidated_ordinals),
                     "preserved_phase_ordinals": sorted(preserved_ordinals),
-                    "previous_thread_id": previous_thread_id,
-                    "thread_id": next_thread_id,
                 },
             )
-        )
-        await session.execute(
-            delete(AGUISnapshot).where(AGUISnapshot.thread_id == previous_thread_id)
         )
         await session.execute(
             delete(RepositoryLock).where(RepositoryLock.run_id == run.id)

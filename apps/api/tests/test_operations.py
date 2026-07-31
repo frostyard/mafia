@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 import pytest
 from mafia.db.base import Base
 from mafia.db.models import (
-    AGUISnapshot,
     Artifact,
     AuditEvent,
     Decision,
@@ -384,7 +383,7 @@ async def test_stalled_retry_preserves_naturally_completed_state_without_retry_r
 
 
 @pytest.mark.asyncio
-async def test_reset_to_specification_rotates_thread_and_invalidates_future_work(
+async def test_reset_to_specification_preserves_thread_and_invalidates_future_work(
     operation_session_factory: OperationSessionFixture,
 ) -> None:
     factory, run_id = operation_session_factory
@@ -429,21 +428,12 @@ async def test_reset_to_specification_rotates_thread_and_invalidates_future_work
                     merge_sha="b" * 40 if phase_state == PhaseState.MERGED else None,
                 )
             )
-        old_thread_id = run.thread_id
-        session.add(
-            AGUISnapshot(
-                scope="local-user",
-                thread_id=old_thread_id,
-                snapshot={},
-            )
-        )
         await session.commit()
 
     reset = await activity.reset_to_specification(run_id)
 
     assert reset.state == RunState.AWAITING_SPEC_DECISION
     assert reset.active_plan_revision is None
-    assert reset.thread_id != old_thread_id
     async with factory() as session:
         phases = list(
             await session.scalars(
@@ -456,9 +446,6 @@ async def test_reset_to_specification_rotates_thread_and_invalidates_future_work
                 Decision.decision_type == DecisionType.RESET_SPECIFICATION,
             )
         )
-        snapshot = await session.scalar(
-            select(AGUISnapshot).where(AGUISnapshot.thread_id == old_thread_id)
-        )
         event = await session.scalar(
             select(AuditEvent).where(
                 AuditEvent.run_id == run_id,
@@ -470,7 +457,6 @@ async def test_reset_to_specification_rotates_thread_and_invalidates_future_work
         (2, PhaseState.WAITING_FOR_MERGE),
     ]
     assert decision is not None
-    assert snapshot is None
     assert event is not None
     assert event.payload["invalidated_phase_ordinals"] == [3, 4]
     assert event.payload["preserved_phase_ordinals"] == [1, 2]
@@ -486,7 +472,6 @@ async def test_specification_reset_timeout_keeps_active_thread_and_state(
         run = await session.get(Run, run_id)
         assert run is not None
         run.active_spec_revision = 1
-        original_thread_id = run.thread_id
         session.add(
             Artifact(
                 run_id=run.id,
@@ -511,7 +496,6 @@ async def test_specification_reset_timeout_keeps_active_thread_and_state(
         run = await session.get(Run, run_id)
     assert run is not None
     assert run.state == RunState.GENERATING_PLAN
-    assert run.thread_id == original_thread_id
 
 
 @pytest.mark.asyncio
@@ -524,7 +508,6 @@ async def test_specification_reset_preserves_naturally_completed_state(
         run = await session.get(Run, run_id)
         assert run is not None
         run.active_spec_revision = 1
-        original_thread_id = run.thread_id
         expected_version = run.version + 1
         session.add(
             Artifact(
@@ -556,7 +539,6 @@ async def test_specification_reset_preserves_naturally_completed_state(
 
     assert reset.state == RunState.FAILED
     assert reset.version == expected_version
-    assert reset.thread_id == original_thread_id
     async with factory() as session:
         reset_event = await session.scalar(
             select(AuditEvent).where(
@@ -582,7 +564,6 @@ async def test_reset_to_specification_continues_after_draining_nonworking_run(
         assert run is not None
         run.state = initial_state
         run.active_spec_revision = 1
-        original_thread_id = run.thread_id
         session.add(
             Artifact(
                 run_id=run.id,
@@ -610,7 +591,6 @@ async def test_reset_to_specification_continues_after_draining_nonworking_run(
     with pytest.raises(asyncio.CancelledError):
         await task
     assert reset.state == RunState.AWAITING_SPEC_DECISION
-    assert reset.thread_id != original_thread_id
     assert operations.has_active_work(run_id) is False
     async with factory() as session:
         cancellation_event = await session.scalar(

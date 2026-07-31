@@ -247,12 +247,39 @@ async def source_validation_status(
     host, _, _ = read_host_project_configuration(identity, settings)
     if cache_path is None:
         return host.validation is not None, "host" if host.validation is not None else "missing"
+    commit = await run_command(
+        (
+            "git",
+            "--git-dir",
+            cache_path,
+            "cat-file",
+            "-e",
+            f"{source_sha}^{{commit}}",
+        ),
+        check=False,
+    )
+    if commit.returncode != 0:
+        raise ProjectConfigurationError(
+            f"Could not read repository commit {source_sha}: "
+            f"{commit.stderr.strip()[-1_000:]}"
+        )
+    repository_configuration = await run_command(
+        (
+            "git",
+            "--git-dir",
+            cache_path,
+            "cat-file",
+            "-e",
+            f"{source_sha}:.mafia.toml",
+        ),
+        check=False,
+    )
+    if repository_configuration.returncode != 0:
+        return host.validation is not None, "host" if host.validation is not None else "missing"
     result = await run_command(
         ("git", "--git-dir", cache_path, "show", f"{source_sha}:.mafia.toml"),
         check=False,
     )
-    if result.returncode != 0 and "does not exist in" in result.stderr:
-        return host.validation is not None, "host" if host.validation is not None else "missing"
     if result.returncode != 0:
         raise ProjectConfigurationError(
             f"Could not read repository .mafia.toml at {source_sha}: "
