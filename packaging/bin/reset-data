@@ -30,6 +30,8 @@ fi
 
 # Module caches can contain read-only directories. Keep recursive chmod physical so
 # descendant symlinks cannot lead outside the already-validated target.
-chmod -R -P u+w -- "$target"
+if [[ -e "$target" ]]; then
+  chmod -R -P u+w -- "$target"
+fi
 rm -rf -- "$target"
 install -d -m 0750 -- "$target"

@@ -39,6 +39,16 @@ def test_reset_requires_explicit_data_directory() -> None:
     assert "MAFIA_DATA_DIR" in result.stderr
 
 
+def test_reset_creates_a_confirmed_safe_missing_runtime_directory(tmp_path: Path) -> None:
+    data_dir = tmp_path / "runtime"
+
+    result = run_reset("--confirm-destructive-reset", data_dir=str(data_dir))
+
+    assert result.returncode == 0, result.stderr
+    assert data_dir.is_dir()
+    assert stat.S_IMODE(data_dir.stat().st_mode) == 0o750
+
+
 def test_reset_rejects_normalized_root_current_and_parent_directories(tmp_path: Path) -> None:
     current = tmp_path / "current"
     current.mkdir()
