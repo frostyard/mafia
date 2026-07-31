@@ -16,7 +16,9 @@ from mafia.domain.enums import (
 from mafia.domain.schemas import DecisionSubmission, RunActivity
 from mafia.domain.state_machine import ALLOWED_TRANSITIONS, require_transition
 from mafia.services.artifacts import ArtifactGenerator
+from mafia.services.github import post_pull_request_comment
 from mafia.services.operations import has_active_work, launch_background_work, tracked_operation
+from mafia.services.pr_reviews import PullRequestReviewService
 from mafia.services.project_config import source_validation_status
 from mafia.services.repositories import RepositoryIdentity
 from mafia.services.runs import (
@@ -25,11 +27,14 @@ from mafia.services.runs import (
     transition_run,
     transition_with_pending_action,
 )
-from mafia.services.source import capture_source_snapshot
+from mafia.services.source import capture_pull_request_snapshot, capture_source_snapshot
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+PR_REVIEW_DECISION_PROMPT = (
+    "Review the consolidated findings. Post them to the pull request or finish without posting."
+)
 
 
 class RunControlError(RuntimeError):
@@ -145,12 +150,233 @@ async def _advance_failed(
     phase_id: str | None,
 ) -> None:
     del feedback, phase_id
-    raise RunControlError(f"Run {run_id} has no retry implementation yet")
+    async with SessionFactory() as session:
+        run = await get_run(session, run_id)
+        failed_phase = await session.scalar(
+            select(Phase).where(Phase.run_id == run.id, Phase.status == PhaseState.FAILED)
+        )
+        accepted_specification = await session.scalar(
+            select(Decision.id)
+            .join(Artifact, Decision.artifact_id == Artifact.id)
+            .where(
+                Decision.run_id == run.id,
+                Decision.decision_type == DecisionType.ACCEPT,
+                Artifact.kind == ArtifactKind.SPECIFICATION,
+            )
+            .limit(1)
+        )
+    if failed_phase is not None:
+        from mafia.services.lifecycle import recover_phase_pull_request
+
+        if await recover_phase_pull_request(run_id, failed_phase.id):
+            return
+        async with SessionFactory() as session:
+            run = await get_run(session, run_id)
+            phase = await session.get(Phase, failed_phase.id)
+            if phase is None:
+                raise RunControlError("Failed phase disappeared during retry")
+            phase.status = PhaseState.READY
+            phase.review_cycle += 1
+            phase.implementation_review_attempts = 0
+            phase.remediation_attempts = 0
+            phase.verification_attempts = 0
+            phase.candidate_base_sha = None
+            phase.candidate_diff_hash = None
+            run.failure_code = None
+            run.failure_message = None
+            pending = await resolve_phase_pending_action(
+                run, phase_id=phase.id, source_sha=phase.source_sha, ordinal=phase.ordinal, title=phase.title
+            )
+            await transition_with_pending_action(
+                session,
+                run.id,
+                RunState.READY_FOR_PHASE,
+                expected_version=run.version,
+                event_type="phase.retry_ready",
+                payload={"phase_id": phase.id, "review_cycle": phase.review_cycle},
+                pending=pending,
+            )
+        return
+    if run.workflow_type == WorkflowType.PULL_REQUEST_REVIEW:
+        if await _restore_pull_request_review_action(run_id):
+            return
+        await _review_pull_request(run_id)
+        return
+    if accepted_specification is not None:
+        await _generate_plan(run_id, feedback="Retry after an interrupted planning step.")
+        return
+    if await _restore_artifact_action(run_id):
+        return
+    await _generate_specification(run_id)
 
 
 async def _advance_pull_request_review(run_id: str) -> None:
-    """Task 5 owns pull-request review generation and decisions."""
-    raise RunControlError(f"Run {run_id} has no pull-request review implementation yet")
+    async with SessionFactory() as session:
+        run = await get_run(session, run_id)
+    if run.state == RunState.FAILED:
+        await _advance_failed(run_id, feedback=None, phase_id=None)
+        return
+    if run.state != RunState.INTAKE:
+        raise RunControlError(f"Run {run_id} cannot advance from {run.state.value}")
+    await _review_pull_request(run_id)
+
+
+async def _review_pull_request(run_id: str) -> None:
+    async with SessionFactory() as session:
+        run = await get_run(session, run_id)
+        if run.pull_request_number is None:
+            raise RunControlError("Pull-request review run has no pull request number")
+        run = await transition_run(
+            session,
+            run.id,
+            RunState.GROUNDING_PR_REVIEW,
+            expected_version=run.version,
+            event_type="pull_request_review.grounding_started",
+            payload={"pull_request_number": run.pull_request_number},
+        )
+        async with tracked_operation(
+            run_id=run.id,
+            operation_type="source.grounding",
+            operation_key=f"pr-{run.pull_request_number}:attempt-{run.version}",
+            detail={"reason": "pull_request_review", "pull_request_number": run.pull_request_number},
+        ) as operation:
+            snapshot, context = await capture_pull_request_snapshot(session, run, run.repository)
+            operation.set_result(
+                {
+                    "source_sha": snapshot.git_sha,
+                    "base_sha": context.get("base_sha"),
+                    "changed_files": context.get("changed_files"),
+                }
+            )
+    run = await _transition_state(
+        run_id,
+        RunState.REVIEWING_PR,
+        "pull_request_review.started",
+        {
+            "pull_request_number": run.pull_request_number,
+            "head_sha": snapshot.git_sha,
+            "models": [run.primary_model, run.reviewer_model],
+        },
+    )
+    service = PullRequestReviewService()
+    reviews = await asyncio.gather(
+        service.review(run, snapshot, context, model=run.primary_model),
+        service.review(run, snapshot, context, model=run.reviewer_model),
+    )
+    artifacts = [
+        await service.persist_review(run, snapshot, review, model=model)
+        for model, review in zip((run.primary_model, run.reviewer_model), reviews, strict=True)
+    ]
+    run = await _transition_state(
+        run_id,
+        RunState.CONSOLIDATING_PR_REVIEW,
+        "pull_request_review.adjudication_started",
+        {"review_artifacts": [artifact.id for artifact in artifacts], "adjudicator_model": run.primary_model},
+    )
+    consolidated = await service.consolidate(run, snapshot, context, artifacts)
+    async with SessionFactory() as session:
+        run = await get_run(session, run_id)
+        run.active_review_revision = consolidated.revision
+        await session.flush()
+        await transition_with_pending_action(
+            session,
+            run.id,
+            RunState.AWAITING_PR_REVIEW_DECISION,
+            expected_version=run.version,
+            event_type="pull_request_review.completed",
+            payload={
+                "artifact_id": consolidated.id,
+                "revision": consolidated.revision,
+                "pull_request_number": run.pull_request_number,
+            },
+            pending=PendingActionSpec(
+                kind=PendingActionKind.PULL_REQUEST_REVIEW,
+                artifact_id=consolidated.id,
+                revision=consolidated.revision,
+                payload={
+                    "prompt": PR_REVIEW_DECISION_PROMPT,
+                    "pull_request_number": run.pull_request_number,
+                },
+            ),
+        )
+
+
+async def _restore_pull_request_review_action(run_id: str) -> bool:
+    async with SessionFactory() as session:
+        run = await get_run(session, run_id)
+        if run.active_review_revision is None or run.pull_request_number is None:
+            return False
+        artifact = await session.scalar(
+            select(Artifact).where(
+                Artifact.run_id == run.id,
+                Artifact.kind == ArtifactKind.PULL_REQUEST_REVIEW_CONSOLIDATED,
+                Artifact.revision == run.active_review_revision,
+            )
+        )
+        if artifact is None:
+            return False
+        await transition_with_pending_action(
+            session,
+            run.id,
+            RunState.AWAITING_PR_REVIEW_DECISION,
+            expected_version=run.version,
+            event_type="pull_request_review.post_retry_ready",
+            pending=PendingActionSpec(
+                kind=PendingActionKind.PULL_REQUEST_REVIEW,
+                artifact_id=artifact.id,
+                revision=artifact.revision,
+                payload={
+                    "prompt": PR_REVIEW_DECISION_PROMPT,
+                    "pull_request_number": run.pull_request_number,
+                },
+            ),
+        )
+    return True
+
+
+async def _restore_artifact_action(run_id: str) -> bool:
+    async with SessionFactory() as session:
+        run = await get_run(session, run_id)
+        for kind, revision, state, prompt in (
+            (
+                ArtifactKind.SPECIFICATION,
+                run.active_spec_revision,
+                RunState.AWAITING_SPEC_DECISION,
+                "Accept this specification or refine it with feedback.",
+            ),
+            (
+                ArtifactKind.PLAN,
+                run.active_plan_revision,
+                RunState.AWAITING_PLAN_DECISION,
+                "Accept the reviewed plan or refine it with feedback.",
+            ),
+        ):
+            if revision is None:
+                continue
+            artifact = await session.scalar(
+                select(Artifact).where(
+                    Artifact.run_id == run.id, Artifact.kind == kind, Artifact.revision == revision
+                )
+            )
+            if artifact is None:
+                continue
+            await transition_with_pending_action(
+                session,
+                run.id,
+                state,
+                expected_version=run.version,
+                event_type=f"{kind.value}.retry_ready",
+                pending=PendingActionSpec(
+                    kind=PendingActionKind.SPECIFICATION
+                    if kind == ArtifactKind.SPECIFICATION
+                    else PendingActionKind.PLAN,
+                    artifact_id=artifact.id,
+                    revision=artifact.revision,
+                    payload={"prompt": prompt},
+                ),
+            )
+            return True
+    return False
 
 
 async def _generate_specification(run_id: str, *, feedback: str | None = None) -> None:
@@ -360,6 +586,9 @@ async def submit_decision(
         }:
             phase_id, start_phase = await _submit_phase_decision(session, run, action, payload)
             await session.commit()
+        elif action is not None and action.kind == PendingActionKind.PULL_REQUEST_REVIEW:
+            await _submit_pull_request_review_decision(session, run, action, payload)
+            await session.commit()
         else:
             expected_kind, active_revision = _validate_artifact_action(
                 run, action, run_id, pending_action_id, payload
@@ -380,11 +609,7 @@ async def submit_decision(
                 target = RunState.CANCELLED
                 event_type = "run.cancelled"
             elif expected_kind == ArtifactKind.SPECIFICATION:
-                target = (
-                    RunState.GENERATING_SPEC
-                    if payload.action == "refine"
-                    else RunState.GROUNDING_PLAN
-                )
+                target = RunState.GENERATING_SPEC if payload.action == "refine" else RunState.GROUNDING_PLAN
                 event_type = (
                     "specification.refinement_started"
                     if payload.action == "refine"
@@ -459,6 +684,96 @@ async def submit_decision(
     from mafia.services.activity import get_run_activity
 
     return await get_run_activity(run_id)
+
+
+async def _submit_pull_request_review_decision(
+    session: AsyncSession,
+    run: Run,
+    action: PendingAction,
+    payload: DecisionSubmission,
+) -> None:
+    pull_request_number = action.payload.get("pull_request_number")
+    artifact = await session.get(Artifact, action.artifact_id) if action.artifact_id else None
+    if (
+        action.run_id != run.id
+        or action.expected_run_version != run.version
+        or run.state != RunState.AWAITING_PR_REVIEW_DECISION
+        or run.workflow_type != WorkflowType.PULL_REQUEST_REVIEW
+        or not isinstance(pull_request_number, int)
+        or pull_request_number != run.pull_request_number
+        or artifact is None
+        or artifact.run_id != run.id
+        or artifact.kind != ArtifactKind.PULL_REQUEST_REVIEW_CONSOLIDATED
+        or artifact.revision != action.revision
+        or artifact.revision != run.active_review_revision
+    ):
+        raise RunControlError("Pending pull-request review action is stale")
+    if payload.action not in {"post", "finish", "cancel"}:
+        raise RunControlError("Pull-request review action requires Post, Finish, or Cancel")
+    decision_type = {
+        "post": DecisionType.POST_REVIEW,
+        "finish": DecisionType.FINISH_REVIEW,
+        "cancel": DecisionType.CANCEL,
+    }[payload.action]
+    session.add(Decision(run_id=run.id, artifact_id=artifact.id, decision_type=decision_type))
+    await session.delete(action)
+    if payload.action == "cancel":
+        target, event_type, event_payload = RunState.CANCELLED, "run.cancelled", {}
+    elif payload.action == "finish":
+        target, event_type, event_payload = (
+            RunState.COMPLETED,
+            "pull_request_review.finished",
+            {"posted": False},
+        )
+    else:
+        target, event_type, event_payload = (
+            RunState.POSTING_PR_REVIEW,
+            "pull_request_review.post_started",
+            {"pull_request_number": pull_request_number},
+        )
+    _, current = await _transition_without_commit(session, run.id, target, expected_version=run.version)
+    session.add(
+        AuditEvent(
+            run_id=run.id,
+            event_type=event_type,
+            from_state=current.value,
+            to_state=target.value,
+            payload=event_payload,
+        )
+    )
+    if payload.action != "post":
+        return
+    identity = RepositoryIdentity(run.repository.owner, run.repository.name)
+    markdown = artifact.rendered_markdown
+    await session.commit()
+    try:
+        async with tracked_operation(
+            run_id=run.id,
+            operation_type="github.pull_request_comment",
+            operation_key=artifact.id,
+            detail={
+                "repository": identity.slug,
+                "pull_request_number": pull_request_number,
+                "artifact_id": artifact.id,
+            },
+        ) as operation:
+            url = await post_pull_request_comment(
+                identity, pull_request_number, run_id=run.id, artifact_id=artifact.id, markdown=markdown
+            )
+            operation.set_result({"comment_url": url})
+    except Exception:
+        # The consumed decision is durable; retry rebuilds it from the consolidated artifact.
+        raise
+    async with SessionFactory() as final_session:
+        current_run = await get_run(final_session, run.id)
+        await transition_run(
+            final_session,
+            current_run.id,
+            RunState.COMPLETED,
+            expected_version=current_run.version,
+            event_type="pull_request_review.posted",
+            payload={"comment_url": url},
+        )
 
 
 async def _transition_without_commit(
@@ -633,9 +948,7 @@ async def resolve_phase_pending_action(
     title: str,
 ) -> PendingActionSpec:
     identity = RepositoryIdentity(run.repository.owner, run.repository.name)
-    validation_available, _ = await source_validation_status(
-        identity, run.repository.cache_path, source_sha
-    )
+    validation_available, _ = await source_validation_status(identity, run.repository.cache_path, source_sha)
     if validation_available:
         return PendingActionSpec(
             kind=PendingActionKind.PHASE,
@@ -656,9 +969,7 @@ async def resolve_phase_pending_action(
     )
 
 
-def _pending_action(
-    run_id: str, spec: PendingActionSpec, *, expected_run_version: int
-) -> PendingAction:
+def _pending_action(run_id: str, spec: PendingActionSpec, *, expected_run_version: int) -> PendingAction:
     return PendingAction(
         run_id=run_id,
         kind=spec.kind,
@@ -723,9 +1034,7 @@ async def _submit_phase_decision(
         if payload.action != "cancel":
             raise RunControlError("Configuration action requires Check again or Cancel")
     elif payload.action == "start":
-        session.add(
-            Decision(run_id=run.id, phase_id=phase.id, decision_type=DecisionType.START_PHASE)
-        )
+        session.add(Decision(run_id=run.id, phase_id=phase.id, decision_type=DecisionType.START_PHASE))
         await session.delete(action)
         return phase.id, True
     elif payload.action != "cancel":

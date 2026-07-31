@@ -69,39 +69,6 @@ async def _reconciliation_lock(run_id: str) -> AsyncGenerator[None]:
         yield
 
 
-async def _create_recovery_pr(
-    identity: RepositoryIdentity,
-    phase: Phase,
-    default_branch: str,
-    commit: str,
-) -> str:
-    require_repository_owner(identity)
-    body = (
-        "## Summary\n\n"
-        f"Recovered phase {phase.ordinal} after the local process stopped.\n\n"
-        f"## Source\n\nPlanned from `{phase.source_sha}` and committed as `{commit}`."
-    )
-    result = await run_command(
-        (
-            "gh",
-            "pr",
-            "create",
-            "--repo",
-            identity.slug,
-            "--base",
-            default_branch,
-            "--head",
-            phase.branch_name or "",
-            "--title",
-            f"Phase {phase.ordinal}: {phase.title}",
-            "--body",
-            body,
-        ),
-        cwd=Path(phase.worktree_path) if phase.worktree_path else None,
-    )
-    return result.stdout.strip()
-
-
 async def _branch_commit(
     identity: RepositoryIdentity,
     phase: Phase,
@@ -236,9 +203,7 @@ async def _mark_interrupted_run_failed(run_id: str, message: str) -> None:
         if phase is not None:
             phase.status = PhaseState.FAILED
         run.failure_code = (
-            "pull_request_review_post_failed"
-            if run.state == RunState.POSTING_PR_REVIEW
-            else "interrupted"
+            "pull_request_review_post_failed" if run.state == RunState.POSTING_PR_REVIEW else "interrupted"
         )
         run.failure_message = message
         await session.commit()
@@ -308,53 +273,16 @@ async def recover_interrupted_runs() -> None:
                 "message": "The backend process stopped before this operation completed.",
             }
         await session.commit()
-        run_ids = list(
-            await session.scalars(select(Run.id).where(Run.state.in_(recoverable_states)))
-        )
+        run_ids = list(await session.scalars(select(Run.id).where(Run.state.in_(recoverable_states))))
     for run_id in run_ids:
         try:
-            async with SessionFactory() as session:
-                run = await get_run(session, run_id)
-                phase = await session.scalar(
-                    select(Phase).where(
-                        Phase.run_id == run.id,
-                        Phase.status.in_({PhaseState.EXECUTING, PhaseState.WAITING_FOR_MERGE}),
-                    )
-                )
-                identity = RepositoryIdentity(run.repository.owner, run.repository.name)
-                require_repository_owner(identity)
-                cache_path = run.repository.cache_path
-                default_branch = run.repository.default_branch
-            if phase is None or phase.branch_name is None:
-                await _mark_interrupted_run_failed(
-                    run_id,
-                    "The process stopped during model work. Start the workflow to retry.",
-                )
-                continue
-            pr = await pull_request_for_branch(identity, phase.branch_name)
-            commit = await _branch_commit(identity, phase, cache_path)
-            if pr is None and commit is not None:
-                if default_branch is None:
-                    raise ReconciliationError("Repository default branch is unknown")
-                url = await _create_recovery_pr(
-                    identity,
-                    phase,
-                    default_branch,
-                    commit,
-                )
-                pr = await pull_request_for_branch(identity, phase.branch_name)
-                if pr is None:
-                    raise ReconciliationError(f"Created {url} but could not retrieve it")
-            if pr is not None and commit is not None:
-                await _record_recovered_pr(run_id, phase.id, commit, pr)
-            else:
-                await _mark_interrupted_run_failed(
-                    run_id,
-                    "The process stopped before a validated phase branch was pushed. "
-                    "Start the workflow to retry the phase.",
-                )
+            # Startup only records interruption. Retry owns recovery and any external work.
+            await _mark_interrupted_run_failed(
+                run_id,
+                "The process stopped before this work completed. Retry the run to continue.",
+            )
         except Exception:
-            logger.exception("Failed to recover interrupted run %s", run_id)
+            logger.exception("Failed to mark interrupted run %s as failed", run_id)
     async with SessionFactory() as session:
         await session.execute(delete(RepositoryLock))
         await session.commit()
@@ -528,9 +456,7 @@ async def monitor_merges(stop: asyncio.Event, poll_seconds: float) -> None:
     while not stop.is_set():
         async with SessionFactory() as session:
             run_ids = list(
-                await session.scalars(
-                    select(Run.id).where(Run.state == RunState.WAITING_FOR_MERGE)
-                )
+                await session.scalars(select(Run.id).where(Run.state == RunState.WAITING_FOR_MERGE))
             )
         for run_id in run_ids:
             try:

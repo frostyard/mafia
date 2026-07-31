@@ -1,5 +1,7 @@
 from collections.abc import AsyncGenerator, Awaitable, Callable
+from pathlib import Path
 from types import ModuleType
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -14,7 +16,12 @@ from mafia.db.models import (
     Run,
     SourceSnapshot,
 )
-from mafia.domain.artifacts import ImplementationPlan, Specification
+from mafia.domain.artifacts import (
+    ConsolidatedPullRequestReview,
+    ImplementationPlan,
+    PullRequestReview,
+    Specification,
+)
 from mafia.domain.enums import (
     ArtifactKind,
     DecisionType,
@@ -22,6 +29,7 @@ from mafia.domain.enums import (
     PhaseState,
     RequirementType,
     RunState,
+    WorkflowType,
 )
 from mafia.domain.schemas import DecisionSubmission
 from mafia.services import operations, run_control
@@ -870,3 +878,172 @@ async def test_plan_accept_preserves_open_pull_request_gate(
     assert accepted.state == RunState.WAITING_FOR_MERGE
     assert [(phase.ordinal, phase.status) for phase in phases] == [(1, PhaseState.WAITING_FOR_MERGE)]
     assert action is None
+
+
+class FakePullRequestReviewService:
+    async def review(
+        self, run: Run, snapshot: SourceSnapshot, context: dict[str, Any], *, model: str
+    ) -> PullRequestReview:
+        del run, snapshot, context, model
+        return PullRequestReview(
+            summary="No defects.", verdict="approve", findings=[], strengths=[], testing_assessment="Covered."
+        )
+
+    async def persist_review(
+        self, run: Run, snapshot: SourceSnapshot, review: PullRequestReview, *, model: str
+    ) -> Artifact:
+        async with run_control.SessionFactory() as session:
+            artifact = Artifact(
+                run_id=run.id,
+                source_snapshot_id=snapshot.id,
+                kind=ArtifactKind.PULL_REQUEST_REVIEW,
+                revision=1 if model == run.primary_model else 2,
+                structured_data=review.model_dump(mode="json"),
+                rendered_markdown="# Review",
+                model=model,
+            )
+            session.add(artifact)
+            await session.commit()
+            return artifact
+
+    async def consolidate(
+        self, run: Run, snapshot: SourceSnapshot, context: dict[str, Any], reviews: list[Artifact]
+    ) -> Artifact:
+        del context, reviews
+        review = ConsolidatedPullRequestReview(
+            pull_request_number=run.pull_request_number or 0,
+            head_sha=snapshot.git_sha,
+            summary="No defects.",
+            verdict="approve",
+            findings=[],
+            strengths=[],
+            testing_assessment="Covered.",
+            dispositions=[],
+        )
+        async with run_control.SessionFactory() as session:
+            artifact = Artifact(
+                run_id=run.id,
+                source_snapshot_id=snapshot.id,
+                kind=ArtifactKind.PULL_REQUEST_REVIEW_CONSOLIDATED,
+                revision=1,
+                structured_data=review.model_dump(mode="json"),
+                rendered_markdown="# Consolidated review",
+                model=run.primary_model,
+            )
+            session.add(artifact)
+            await session.commit()
+            return artifact
+
+
+@pytest.mark.asyncio
+async def test_pull_request_review_persists_post_action(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session)
+        run.workflow_type = WorkflowType.PULL_REQUEST_REVIEW
+        run.requirement_type = None
+        run.requirement_text = None
+        run.pull_request_number = 42
+        await session.commit()
+
+    async def capture(
+        session: AsyncSession, run: Run, repository: Repository
+    ) -> tuple[SourceSnapshot, dict[str, Any]]:
+        del repository
+        snapshot = SourceSnapshot(
+            run_id=run.id,
+            git_sha="b" * 40,
+            reason="pr-review-42",
+            manifest={"files": ["app.py"]},
+            issue_data={"base_sha": "a" * 40, "head_sha": "b" * 40, "files": []},
+            instructions=[],
+            worktree_path=str(tmp_path),
+        )
+        session.add(snapshot)
+        await session.flush()
+        return snapshot, snapshot.issue_data or {}
+
+    monkeypatch.setattr(run_control, "capture_pull_request_snapshot", capture)
+    monkeypatch.setattr(run_control, "PullRequestReviewService", FakePullRequestReviewService)
+    await run_control.advance_run(run.id)
+
+    async with session_factory() as session:
+        reviewed = await get_run(session, run.id)
+    assert reviewed.state == RunState.AWAITING_PR_REVIEW_DECISION
+    assert reviewed.pending_action is not None
+    assert reviewed.pending_action.kind == PendingActionKind.PULL_REQUEST_REVIEW
+    assert reviewed.pending_action.payload["pull_request_number"] == 42
+
+
+@pytest.mark.asyncio
+async def test_pull_request_review_finish_consumes_matching_action(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.AWAITING_PR_REVIEW_DECISION)
+        run.workflow_type = WorkflowType.PULL_REQUEST_REVIEW
+        run.requirement_type = None
+        run.requirement_text = None
+        run.pull_request_number = 42
+        run.active_review_revision = 1
+        artifact = Artifact(
+            run_id=run.id,
+            kind=ArtifactKind.PULL_REQUEST_REVIEW_CONSOLIDATED,
+            revision=1,
+            structured_data={},
+            rendered_markdown="# Review",
+            model=run.primary_model,
+        )
+        session.add(artifact)
+        await session.flush()
+        run.pending_action = PendingAction(
+            kind=PendingActionKind.PULL_REQUEST_REVIEW,
+            artifact_id=artifact.id,
+            revision=1,
+            expected_run_version=run.version,
+            payload={"pull_request_number": 42},
+        )
+        await session.commit()
+        action_id = pending_action_id(run)
+
+    monkeypatch.setattr(run_control, "launch_background_work", fail_launch)
+    await run_control.submit_decision(run.id, action_id, DecisionSubmission(action="finish"))
+    async with session_factory() as session:
+        completed = await get_run(session, run.id)
+    assert completed.state == RunState.COMPLETED
+    assert completed.pending_action is None
+
+
+@pytest.mark.asyncio
+async def test_retry_restores_durable_pr_review_action_once(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.FAILED)
+        run.workflow_type = WorkflowType.PULL_REQUEST_REVIEW
+        run.requirement_type = None
+        run.requirement_text = None
+        run.pull_request_number = 42
+        run.active_review_revision = 1
+        run.failure_code = "pull_request_review_post_failed"
+        artifact = Artifact(
+            run_id=run.id,
+            kind=ArtifactKind.PULL_REQUEST_REVIEW_CONSOLIDATED,
+            revision=1,
+            structured_data={},
+            rendered_markdown="# Review",
+            model=run.primary_model,
+        )
+        session.add(artifact)
+        await session.commit()
+
+    launched: list[Callable[[], Awaitable[None]]] = []
+    monkeypatch.setattr(run_control, "launch_background_work", lambda _run_id, work: launched.append(work))
+    await run_control.retry_run(run.id)
+    assert len(launched) == 1
+    await launched[0]()
+    async with session_factory() as session:
+        retried = await get_run(session, run.id)
+    assert retried.state == RunState.AWAITING_PR_REVIEW_DECISION
+    assert retried.pending_action is not None

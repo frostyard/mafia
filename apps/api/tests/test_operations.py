@@ -137,8 +137,7 @@ async def test_tracked_operation_persists_cancellation_when_caller_is_cancelled_
         async with factory() as session:
             row = await session.scalar(
                 select(Operation).where(
-                    Operation.idempotency_key
-                    == f"{run_id}:-:model.plan_generation:cancelled-snapshot"
+                    Operation.idempotency_key == f"{run_id}:-:model.plan_generation:cancelled-snapshot"
                 )
             )
         if row is not None and row.status == "cancelled":
@@ -420,11 +419,7 @@ async def test_reset_to_specification_does_not_rotate_thread_and_invalidates_fut
                     plan_revision=2,
                     source_sha="a" * 40,
                     pr_number=42 if ordinal == 2 else None,
-                    pr_url=(
-                        "https://github.com/octo/repo/pull/42"
-                        if ordinal == 2
-                        else None
-                    ),
+                    pr_url=("https://github.com/octo/repo/pull/42" if ordinal == 2 else None),
                     merge_sha="b" * 40 if phase_state == PhaseState.MERGED else None,
                 )
             )
@@ -436,9 +431,7 @@ async def test_reset_to_specification_does_not_rotate_thread_and_invalidates_fut
     assert reset.active_plan_revision is None
     async with factory() as session:
         phases = list(
-            await session.scalars(
-                select(Phase).where(Phase.run_id == run_id).order_by(Phase.ordinal)
-            )
+            await session.scalars(select(Phase).where(Phase.run_id == run_id).order_by(Phase.ordinal))
         )
         decision = await session.scalar(
             select(Decision).where(
