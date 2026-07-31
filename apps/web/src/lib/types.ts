@@ -2,6 +2,28 @@ import type { OperationStatus, PhaseState, RunState } from "@/lib/workflow-state
 
 export type RequirementType = "issue" | "text";
 export type WorkflowType = "specification" | "pull_request_review";
+export type PendingActionKind =
+  | "specification"
+  | "plan"
+  | "phase"
+  | "pull_request_review"
+  | "configuration_required";
+
+export interface PendingAction {
+  id: string;
+  kind: PendingActionKind;
+  expected_run_version: number;
+  artifact_id: string | null;
+  phase_id: string | null;
+  revision: number | null;
+  payload: Record<string, unknown>;
+  created_at: string;
+  updated_at: string;
+}
+
+export type DecisionPayload =
+  | { action: "accept" | "start" | "cancel" | "post" | "finish" | "check_again" }
+  | { action: "refine"; feedback: string };
 
 export interface Repository {
   id: string;
@@ -41,7 +63,6 @@ export interface Run {
   pull_request_number: number | null;
   primary_model: string;
   reviewer_model: string;
-  thread_id: string;
   state: RunState;
   version: number;
   active_spec_revision: number | null;
@@ -119,6 +140,7 @@ export interface Evidence {
 export interface RunDetail extends Run {
   artifacts: Artifact[];
   phases: Phase[];
+  pending_action: PendingAction | null;
 }
 
 export type ActivityStatusMode =
@@ -174,6 +196,7 @@ export interface RunActivity {
   source_sha: string | null;
   files_discovered: number | null;
   citations_found: number;
+  pending_action: PendingAction | null;
   operations: Operation[];
   events: ActivityEvent[];
 }
