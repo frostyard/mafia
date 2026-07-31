@@ -81,12 +81,12 @@ function DecisionCard({ action, runId, projectId }: { action: PendingAction; run
           </>
         ) : action.kind === "configuration_required" ? (
           <>
-            <Link className="button button-secondary" href={`/projects/${configuredProjectId}`}>Open project settings</Link>
+            <Link className="button button-secondary" href={`/projects/${encodeURIComponent(configuredProjectId)}`}>Open project settings</Link>
             <button className="button" disabled={isResponding} onClick={() => respond({ action: "check_again" })} type="button">Check again</button>
           </>
         ) : (
           <button className="button" disabled={isResponding} onClick={() => respond({ action: action.kind === "phase" ? "start" : "accept" })} type="button">
-            {isResponding ? "Starting..." : action.kind === "phase" ? "Start phase" : "Accept"}
+            {isResponding ? action.kind === "phase" ? "Starting..." : "Accepting..." : action.kind === "phase" ? "Start phase" : "Accept"}
           </button>
         )}
         {isArtifact ? (
@@ -145,7 +145,7 @@ export function WorkflowPanel({ run }: { run: RunDetail }) {
         </div>
         <div className="decision-actions">
           {canResetSpecification ? <button className="button button-secondary" disabled={isStarting || isResetting} onClick={() => { setError(undefined); setIsConfirmingReset(true); }} type="button">{isResetting ? "Resetting..." : "Adjust specification"}</button> : null}
-          {run.state === "intake" ? <button className="button" disabled={isStarting || isResetting} onClick={start} type="button">{isStarting ? "Starting..." : "Start workflow"}</button> : null}
+          {run.state === "intake" ? <button className="button" disabled={isStarting || isResetting} onClick={start} type="button">{isStarting ? "Starting..." : run.workflow_type === "pull_request_review" ? "Start review" : "Start workflow"}</button> : null}
         </div>
       </div>
       {isConfirmingReset ? (

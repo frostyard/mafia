@@ -38,6 +38,24 @@ describe("VisibilityRail polling and controls", () => {
     expect(refresh).toHaveBeenCalledOnce();
   });
 
+  it("resumes polling after retry changes terminal activity to working activity", async () => {
+    vi.useFakeTimers();
+    vi.mocked(retryRun).mockResolvedValue(activity("generating_plan"));
+    vi.mocked(getRunActivity).mockResolvedValue(activity("reviewing_plan"));
+    const view = render(<VisibilityRail initialActivity={activity("failed", true)} runId="run-1" workflowType="specification" />);
+
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    expect(getRunActivity).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await act(async () => {});
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+
+    expect(getRunActivity).toHaveBeenCalledOnce();
+    expect(refresh).toHaveBeenCalledTimes(2);
+    view.unmount();
+  });
+
   it("does not offer retry when the activity does not permit it", () => {
     render(<VisibilityRail initialActivity={activity("failed")} runId="run-1" workflowType="specification" />);
 

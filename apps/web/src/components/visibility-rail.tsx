@@ -250,9 +250,15 @@ export function VisibilityRail({
   const [isControlling, setIsControlling] = useState(false);
   const activityRef = useRef(initialActivity);
   const router = useRouter();
+  const refreshRef = useRef(router.refresh);
+  const shouldPoll = !isTerminalActivity(activity);
 
   useEffect(() => {
-    if (isTerminalActivity(activityRef.current)) return;
+    refreshRef.current = router.refresh;
+  });
+
+  useEffect(() => {
+    if (!shouldPoll) return;
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     async function poll() {
@@ -262,7 +268,7 @@ export function VisibilityRail({
         if (disposed) return;
         setPollError(undefined);
         if (shouldRefreshRunPage(activityRef.current, next)) {
-          router.refresh();
+          refreshRef.current();
         }
         activityRef.current = next;
         setActivity(next);
@@ -280,7 +286,7 @@ export function VisibilityRail({
       disposed = true;
       if (timer) clearTimeout(timer);
     };
-  }, [router, runId]);
+  }, [runId, shouldPoll]);
 
   async function cancel() {
     setControlError(undefined);
@@ -299,7 +305,9 @@ export function VisibilityRail({
     setControlError(undefined);
     setIsControlling(true);
     try {
-      setActivity(await retryRun(runId));
+      const next = await retryRun(runId);
+      activityRef.current = next;
+      setActivity(next);
       router.refresh();
     } catch (error) {
       setControlError((error as { message?: string }).message ?? "Retry failed.");

@@ -92,6 +92,12 @@ describe("WorkflowPanel", () => {
     expect(refresh).toHaveBeenCalledOnce();
   });
 
+  it("uses review-specific start copy", () => {
+    render(<WorkflowPanel run={run({ workflow_type: "pull_request_review" })} />);
+
+    expect(screen.getByRole("button", { name: "Start review" })).toBeTruthy();
+  });
+
   it("submits artifact acceptance and refinement with exact payloads", async () => {
     vi.mocked(submitDecision).mockResolvedValue({} as never);
     const view = render(
@@ -201,6 +207,27 @@ describe("WorkflowPanel", () => {
     render(<WorkflowPanel run={run({ pending_action: action("phase") })} />);
     fireEvent.click(screen.getAllByRole("button", { name: "Start phase" })[0]);
     expect((await screen.findByRole("alert")).textContent).toContain("Decision rejected");
+  });
+
+  it("uses accepting copy while artifact acceptance is pending", () => {
+    vi.mocked(submitDecision).mockImplementation(() => new Promise(() => {}));
+    render(<WorkflowPanel run={run({ pending_action: action("specification") })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Accept" }));
+
+    expect(screen.getByRole("button", { name: "Accepting..." })).toBeTruthy();
+  });
+
+  it("URL-encodes the configuration project ID", () => {
+    render(
+      <WorkflowPanel
+        run={run({
+          pending_action: action("configuration_required", { project_id: "project /?" }),
+        })}
+      />,
+    );
+
+    expect(screen.getByRole("link", { name: "Open project settings" }).getAttribute("href")).toBe("/projects/project%20%2F%3F");
   });
 
   it("renders no inferred restore, durable-thread, or connection controls", () => {
