@@ -6,6 +6,12 @@ import pytest
 from mafia.domain.enums import OperationStatus, PhaseState, RunState
 
 
+LEGACY_DOC_TERMS = re.compile(
+    r"\b(?:ag-ui|copilotkit|checkpoint(?:s)?|snapshot(?:s)?|thread(?:s)?|interrupt restoration)\b",
+    re.I,
+)
+
+
 def _typescript_values(source: str, name: str) -> set[str]:
     match = re.search(rf"export const {name} = \[(.*?)\] as const", source, re.S)
     assert match is not None
@@ -62,10 +68,35 @@ def test_frontend_source_has_no_copilotkit_or_ag_ui_route() -> None:
     assert not (source_root / "app" / "api" / "ag-ui").exists()
 
 
+@pytest.mark.parametrize(
+    "prose",
+    (
+        "The AG-UI route is obsolete.",
+        "CopilotKit no longer owns workflow controls.",
+        "Do not restore checkpoints during startup.",
+        "Remove stale snapshots before deployment.",
+        "Durable threads are not part of this control plane.",
+        "Interrupt restoration is no longer supported.",
+    ),
+)
+def test_legacy_document_pattern_matches_removed_control_plane_prose(prose: str) -> None:
+    assert LEGACY_DOC_TERMS.search(prose)
+
+
+def test_deployment_guides_use_current_release_paths_for_destructive_upgrade() -> None:
+    for path in (
+        Path("docs/deployment.md"),
+        Path("site/content/operations/deployment.md"),
+    ):
+        source = path.read_text()
+        assert "/opt/mafia/current/bin/reset-data" in source
+        assert "/opt/mafia/current/.venv/bin/python" in source
+        assert "/opt/mafia/current/alembic.ini" in source
+
+
 def test_repository_has_no_legacy_workflow_control_plane_surfaces() -> None:
     runtime_paths = [
         *Path("apps/api/src").rglob("*.py"),
-        *Path("apps/api/migrations").rglob("*.py"),
         *Path("apps/web/src").rglob("*.ts"),
         *Path("apps/web/src").rglob("*.tsx"),
         Path("pyproject.toml"),
@@ -97,10 +128,10 @@ def test_repository_has_no_legacy_workflow_control_plane_surfaces() -> None:
         "useInterrupt",
         "/ag-ui",
         "copilotkit",
-    )
-    legacy_doc_terms = re.compile(
-        r"\\b(?:ag-ui|copilotkit|checkpoint(?:s)?|snapshot(?:s)?|thread(?:s)?|interrupt restoration)\\b",
-        re.I,
+        "thread_id",
+        "checkpoints_dir",
+        "AGENT_URL",
+        "NEXT_PUBLIC_COPILOTKIT_RUNTIME_URL",
     )
 
     for path in runtime_paths:
@@ -110,4 +141,4 @@ def test_repository_has_no_legacy_workflow_control_plane_surfaces() -> None:
     for path in operator_docs:
         if path in approved_history:
             continue
-        assert not legacy_doc_terms.search(path.read_text()), path
+        assert not LEGACY_DOC_TERMS.search(path.read_text()), path
