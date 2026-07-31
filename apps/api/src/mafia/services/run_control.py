@@ -2,13 +2,30 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 
-from mafia.db.models import AuditEvent
+from mafia.db.models import Artifact, AuditEvent, Decision, PendingAction, Phase, Run, SourceSnapshot
 from mafia.db.session import SessionFactory
-from mafia.domain.enums import RunState
-from mafia.domain.schemas import RunActivity
-from mafia.domain.state_machine import ALLOWED_TRANSITIONS
-from mafia.services.operations import has_active_work, launch_background_work
-from mafia.services.runs import get_run, transition_run
+from mafia.domain.artifacts import ImplementationPlan
+from mafia.domain.enums import (
+    ArtifactKind,
+    DecisionType,
+    PendingActionKind,
+    PhaseState,
+    RunState,
+    WorkflowType,
+)
+from mafia.domain.schemas import DecisionSubmission, RunActivity
+from mafia.domain.state_machine import ALLOWED_TRANSITIONS, require_transition
+from mafia.services.artifacts import ArtifactGenerator
+from mafia.services.operations import has_active_work, launch_background_work, tracked_operation
+from mafia.services.runs import (
+    PendingActionSpec,
+    get_run,
+    transition_run,
+    transition_with_pending_action,
+)
+from mafia.services.source import capture_source_snapshot
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -105,16 +122,16 @@ async def advance_run(
 ) -> None:
     async with SessionFactory() as session:
         run = await get_run(session, run_id)
-    if run.state == RunState.INTAKE:
-        await _advance_intake(run_id)
+    if run.workflow_type == WorkflowType.PULL_REQUEST_REVIEW:
+        await _advance_pull_request_review(run_id)
+    elif run.state in {RunState.INTAKE, RunState.GENERATING_SPEC}:
+        await _generate_specification(run_id, feedback=feedback)
+    elif run.state in {RunState.GROUNDING_PLAN, RunState.REGROUNDING}:
+        await _generate_plan(run_id, feedback=feedback)
     elif run.state == RunState.FAILED:
         await _advance_failed(run_id, feedback=feedback, phase_id=phase_id)
     else:
         raise RunControlError(f"Run {run_id} cannot advance from {run.state.value}")
-
-
-async def _advance_intake(run_id: str) -> None:
-    raise RunControlError(f"Run {run_id} has no workflow implementation yet")
 
 
 async def _advance_failed(
@@ -125,3 +142,405 @@ async def _advance_failed(
 ) -> None:
     del feedback, phase_id
     raise RunControlError(f"Run {run_id} has no retry implementation yet")
+
+
+async def _advance_pull_request_review(run_id: str) -> None:
+    """Task 5 owns pull-request review generation and decisions."""
+    raise RunControlError(f"Run {run_id} has no pull-request review implementation yet")
+
+
+async def _generate_specification(run_id: str, *, feedback: str | None = None) -> None:
+    async with SessionFactory() as session:
+        run = await get_run(session, run_id)
+        if run.state != RunState.GENERATING_SPEC:
+            run = await transition_run(
+                session,
+                run.id,
+                RunState.GENERATING_SPEC,
+                expected_version=run.version,
+                event_type="specification.started",
+            )
+        reason = f"spec-r{(run.active_spec_revision or 0) + 1}"
+        async with tracked_operation(
+            run_id=run.id,
+            operation_type="source.grounding",
+            operation_key=reason,
+            detail={"reason": reason},
+        ) as operation:
+            snapshot = await capture_source_snapshot(session, run, run.repository, reason=reason)
+            operation.set_result(
+                {
+                    "source_sha": snapshot.git_sha,
+                    "files_discovered": len(snapshot.manifest.get("files", [])),
+                    "manifests_found": len(snapshot.manifest.get("manifests", [])),
+                    "instructions_found": len(snapshot.instructions),
+                }
+            )
+        artifact = await ArtifactGenerator().specification(session, run, snapshot, feedback=feedback)
+        run.active_spec_revision = artifact.revision
+        await session.flush()
+        await transition_with_pending_action(
+            session,
+            run.id,
+            RunState.AWAITING_SPEC_DECISION,
+            expected_version=run.version,
+            event_type="specification.generated",
+            payload={"artifact_id": artifact.id, "revision": artifact.revision},
+            pending=PendingActionSpec(
+                kind=PendingActionKind.SPECIFICATION,
+                artifact_id=artifact.id,
+                revision=artifact.revision,
+                payload={"prompt": "Accept this specification or refine it with feedback."},
+            ),
+        )
+
+
+async def _generate_plan(run_id: str, *, feedback: str | None = None) -> None:
+    async with SessionFactory() as session:
+        run = await get_run(session, run_id)
+        if run.state not in {RunState.GROUNDING_PLAN, RunState.REGROUNDING}:
+            run = await transition_run(
+                session,
+                run.id,
+                RunState.GROUNDING_PLAN,
+                expected_version=run.version,
+                event_type="plan.grounding_started",
+            )
+        reason = f"plan-r{(run.active_plan_revision or 0) + 1}"
+
+    async with tracked_operation(
+        run_id=run_id,
+        operation_type="source.grounding",
+        operation_key=reason,
+        detail={"reason": reason},
+    ) as operation:
+        async with SessionFactory() as session:
+            run = await get_run(session, run_id)
+            snapshot = await capture_source_snapshot(session, run, run.repository, reason=reason)
+        operation.set_result(
+            {
+                "source_sha": snapshot.git_sha,
+                "files_discovered": len(snapshot.manifest.get("files", [])),
+                "manifests_found": len(snapshot.manifest.get("manifests", [])),
+                "instructions_found": len(snapshot.instructions),
+            }
+        )
+
+    async with SessionFactory() as session:
+        run = await get_run(session, run_id)
+        specification = await session.scalar(
+            select(Artifact).where(
+                Artifact.run_id == run.id,
+                Artifact.kind == ArtifactKind.SPECIFICATION,
+                Artifact.revision == run.active_spec_revision,
+            )
+        )
+        if specification is None:
+            raise RunControlError("Accepted specification artifact is missing")
+        preserved_phases = list(
+            await session.scalars(
+                select(Phase)
+                .where(
+                    Phase.run_id == run.id,
+                    Phase.status.in_({PhaseState.MERGED, PhaseState.WAITING_FOR_MERGE}),
+                )
+                .order_by(Phase.ordinal)
+            )
+        )
+        if preserved_phases:
+            completed_context = "\n".join(
+                f"- Phase {phase.ordinal}: {phase.title} "
+                f"(status {phase.status.value}, merge {phase.merge_sha or 'pending'}): "
+                f"{phase.objective}"
+                for phase in preserved_phases
+            )
+            feedback = (
+                f"{feedback or ''}\n\nMerged phases and phases with an open pull request "
+                "are immutable. Include each one at its existing ordinal without assigning "
+                f"new work to it. Add new work only after those phases:\n{completed_context}"
+            ).strip()
+
+    run = await _transition_state(
+        run_id,
+        RunState.GENERATING_PLAN,
+        "plan.generation_started",
+        {"source_sha": snapshot.git_sha},
+    )
+    generator = ArtifactGenerator()
+    draft_plan = await generator.draft_plan(run, snapshot, specification, feedback=feedback)
+    run = await _transition_state(
+        run_id,
+        RunState.REVIEWING_PLAN,
+        "plan.review_started",
+        {
+            "source_sha": snapshot.git_sha,
+            "draft_plan_artifact_id": draft_plan.id,
+            "reviewer_model": run.reviewer_model,
+        },
+    )
+    review = await generator.adversarial_review(run, snapshot, specification, draft_plan)
+    run = await _transition_state(
+        run_id,
+        RunState.ADJUDICATING_PLAN,
+        "plan.adjudication_started",
+        {"review_artifact_id": review.id, "primary_model": run.primary_model},
+    )
+    resolution = await generator.adjudicate_plan(run, snapshot, specification, draft_plan, review)
+    run = await _transition_state(
+        run_id,
+        RunState.PERSISTING_PLAN,
+        "plan.persistence_started",
+        {"review_artifact_id": review.id, "dispositions": len(resolution.dispositions)},
+    )
+    final_plan, ledger = await generator.persist_final_plan(run, snapshot, review, resolution)
+    async with SessionFactory() as session:
+        run = await get_run(session, run_id)
+        run.active_plan_revision = final_plan.revision
+        await session.flush()
+        await transition_with_pending_action(
+            session,
+            run.id,
+            RunState.AWAITING_PLAN_DECISION,
+            expected_version=run.version,
+            event_type="plan.review_completed",
+            payload={
+                "plan_artifact_id": final_plan.id,
+                "review_artifact_id": review.id,
+                "ledger_artifact_id": ledger.id,
+            },
+            pending=PendingActionSpec(
+                kind=PendingActionKind.PLAN,
+                artifact_id=final_plan.id,
+                revision=final_plan.revision,
+                payload={"prompt": "Accept the reviewed plan or refine it with feedback."},
+            ),
+        )
+
+
+async def _transition_state(
+    run_id: str,
+    target: RunState,
+    event_type: str,
+    payload: dict[str, object] | None = None,
+) -> Run:
+    async with SessionFactory() as session:
+        run = await get_run(session, run_id)
+        if run.state == RunState.CANCELLED:
+            raise asyncio.CancelledError
+        return await transition_run(
+            session,
+            run.id,
+            target,
+            expected_version=run.version,
+            event_type=event_type,
+            payload=payload,
+        )
+
+
+async def submit_decision(
+    run_id: str,
+    pending_action_id: str,
+    payload: DecisionSubmission,
+) -> RunActivity:
+    launch: tuple[str, str | None] | None = None
+    phase_id: str | None = None
+    async with SessionFactory() as session:
+        run = await get_run(session, run_id)
+        action = await session.get(PendingAction, pending_action_id)
+        expected_kind, active_revision = _validate_artifact_action(
+            run, action, run_id, pending_action_id, payload
+        )
+        if action is None or action.artifact_id is None:
+            raise RunControlError("Artifact decision action has no artifact")
+        artifact = await session.get(Artifact, action.artifact_id)
+        if (
+            artifact is None
+            or artifact.run_id != run.id
+            or artifact.kind != expected_kind
+            or artifact.revision != action.revision
+            or artifact.revision != active_revision
+        ):
+            raise RunControlError("Artifact decision does not match the active artifact")
+
+        if payload.action == "cancel":
+            target = RunState.CANCELLED
+            event_type = "run.cancelled"
+        elif expected_kind == ArtifactKind.SPECIFICATION:
+            target = RunState.GENERATING_SPEC if payload.action == "refine" else RunState.GROUNDING_PLAN
+            event_type = (
+                "specification.refinement_started" if payload.action == "refine" else "specification.accepted"
+            )
+            launch = (run.id, payload.feedback if payload.action == "refine" else None)
+        else:
+            target, event_type, launch = await _accept_plan(session, run, artifact, payload)
+
+        session.add(
+            Decision(
+                run_id=run.id,
+                artifact_id=artifact.id,
+                decision_type=DecisionType(payload.action),
+                feedback=payload.feedback,
+            )
+        )
+        await session.delete(action)
+        _, current = await _transition_without_commit(session, run.id, target, expected_version=run.version)
+        session.add(
+            AuditEvent(
+                run_id=run.id,
+                event_type=event_type,
+                from_state=current.value,
+                to_state=target.value,
+                payload={"revision": artifact.revision},
+            )
+        )
+        if target == RunState.READY_FOR_PHASE:
+            phase = await session.scalar(
+                select(Phase).where(Phase.run_id == run.id, Phase.status == PhaseState.READY)
+            )
+            if phase is None:
+                raise RunControlError("Accepted plan has no ready phase")
+            phase_id = phase.id
+        await session.commit()
+
+    if launch is not None:
+        launch_background_work(
+            launch[0],
+            lambda: _run_guarded(
+                launch[0],
+                "planning" if expected_kind == ArtifactKind.PLAN else "specification",
+                lambda: advance_run(launch[0], feedback=launch[1]),
+            ),
+        )
+    elif phase_id is not None:
+        await _create_phase_pending_action(run_id, phase_id)
+    from mafia.services.activity import get_run_activity
+
+    return await get_run_activity(run_id)
+
+
+async def _transition_without_commit(
+    session: AsyncSession,
+    run_id: str,
+    target: RunState,
+    *,
+    expected_version: int,
+) -> tuple[Run, RunState]:
+    run = await get_run(session, run_id)
+    require_transition(run.state, target)
+    current = run.state
+    updated_id = await session.scalar(
+        update(Run)
+        .where(Run.id == run_id, Run.version == expected_version)
+        .values(state=target, version=expected_version + 1)
+        .returning(Run.id)
+    )
+    if updated_id is None:
+        await session.rollback()
+        raise RunControlError("Run changed while consuming the pending action")
+    return run, current
+
+
+def _validate_artifact_action(
+    run: Run,
+    action: PendingAction | None,
+    run_id: str,
+    pending_action_id: str,
+    payload: DecisionSubmission,
+) -> tuple[ArtifactKind, int | None]:
+    if action is None or action.id != pending_action_id:
+        raise RunControlError("Pending action does not exist")
+    if action.run_id != run_id or action.expected_run_version != run.version:
+        raise RunControlError("Pending action is stale")
+    if action.kind == PendingActionKind.SPECIFICATION:
+        expected_kind = ArtifactKind.SPECIFICATION
+        expected_state = RunState.AWAITING_SPEC_DECISION
+        active_revision = run.active_spec_revision
+    elif action.kind == PendingActionKind.PLAN:
+        expected_kind = ArtifactKind.PLAN
+        expected_state = RunState.AWAITING_PLAN_DECISION
+        active_revision = run.active_plan_revision
+    else:
+        raise RunControlError("Pending action is not an artifact decision")
+    if run.state != expected_state:
+        raise RunControlError("Run is not awaiting this artifact decision")
+    if payload.action not in {"accept", "refine", "cancel"}:
+        raise RunControlError("Action is not valid for an artifact decision")
+    return expected_kind, active_revision
+
+
+async def _accept_plan(
+    session: AsyncSession,
+    run: Run,
+    artifact: Artifact,
+    payload: DecisionSubmission,
+) -> tuple[RunState, str, tuple[str, str | None] | None]:
+    if payload.action == "refine":
+        return RunState.GROUNDING_PLAN, "plan.refinement_started", (run.id, payload.feedback)
+    plan = ImplementationPlan.model_validate(artifact.structured_data)
+    snapshot = await session.get(SourceSnapshot, artifact.source_snapshot_id)
+    if snapshot is None:
+        raise RunControlError("Plan source snapshot is missing")
+    existing_phases = {
+        phase.ordinal: phase for phase in await session.scalars(select(Phase).where(Phase.run_id == run.id))
+    }
+    protected = {
+        ordinal: phase
+        for ordinal, phase in existing_phases.items()
+        if phase.status in {PhaseState.MERGED, PhaseState.WAITING_FOR_MERGE}
+    }
+    planned = {item.ordinal: item for item in plan.phases}
+    missing = sorted(set(protected) - set(planned))
+    if missing:
+        raise RunControlError("The revised plan omitted immutable phases: " + ", ".join(map(str, missing)))
+    for item in plan.phases:
+        existing = existing_phases.get(item.ordinal)
+        if existing is None:
+            session.add(
+                Phase(
+                    run_id=run.id,
+                    ordinal=item.ordinal,
+                    title=item.title,
+                    objective=item.objective,
+                    dependencies=item.dependencies,
+                    details=item.model_dump(mode="json"),
+                    status=PhaseState.PENDING,
+                    plan_revision=artifact.revision,
+                    source_sha=snapshot.git_sha,
+                )
+            )
+        elif existing.status not in {PhaseState.MERGED, PhaseState.WAITING_FOR_MERGE}:
+            existing.title = item.title
+            existing.objective = item.objective
+            existing.dependencies = item.dependencies
+            existing.details = item.model_dump(mode="json")
+            existing.status = PhaseState.PENDING
+            existing.plan_revision = artifact.revision
+            existing.source_sha = snapshot.git_sha
+    for ordinal, existing in existing_phases.items():
+        if ordinal not in planned and ordinal not in protected:
+            await session.delete(existing)
+    await session.flush()
+    waiting = next(
+        (phase for phase in protected.values() if phase.status == PhaseState.WAITING_FOR_MERGE),
+        None,
+    )
+    if waiting is not None:
+        return RunState.WAITING_FOR_MERGE, "plan.accepted_waiting_for_merge", None
+    merged = {ordinal for ordinal, phase in protected.items() if phase.status == PhaseState.MERGED}
+    candidates = list(
+        await session.scalars(
+            select(Phase)
+            .where(Phase.run_id == run.id, Phase.status == PhaseState.PENDING)
+            .order_by(Phase.ordinal)
+        )
+    )
+    ready = next((phase for phase in candidates if set(phase.dependencies).issubset(merged)), None)
+    if ready is None:
+        return RunState.COMPLETED, "plan.accepted_complete", None
+    ready.status = PhaseState.READY
+    return RunState.READY_FOR_PHASE, "plan.accepted", None
+
+
+async def _create_phase_pending_action(run_id: str, phase_id: str) -> None:
+    """Task 4 replaces this boundary with durable phase-action creation."""
+    logger.info("Phase %s for run %s is ready for Task 4 action creation", phase_id, run_id)
