@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 
 from mafia.db.models import Artifact, AuditEvent, Decision, PendingAction, Phase, Run, SourceSnapshot
 from mafia.db.session import SessionFactory
@@ -16,10 +17,17 @@ from mafia.domain.enums import (
 from mafia.domain.schemas import DecisionSubmission, RunActivity
 from mafia.domain.state_machine import ALLOWED_TRANSITIONS, require_transition
 from mafia.services.artifacts import ArtifactGenerator
+from mafia.services.commands import run_command
+from mafia.services.devcontainers import create_execution_environment
 from mafia.services.github import post_pull_request_comment
 from mafia.services.operations import has_active_work, launch_background_work, tracked_operation
 from mafia.services.pr_reviews import PullRequestReviewService
-from mafia.services.project_config import source_validation_status
+from mafia.services.project_config import (
+    ProjectConfigurationError,
+    resolve_project_configuration_content,
+    run_deterministic_validation,
+    source_validation_status,
+)
 from mafia.services.repositories import RepositoryIdentity
 from mafia.services.runs import (
     PendingActionSpec,
@@ -27,6 +35,7 @@ from mafia.services.runs import (
     transition_run,
     transition_with_pending_action,
 )
+from mafia.services.sandbox import ExecutionEnvironment
 from mafia.services.source import capture_pull_request_snapshot, capture_source_snapshot
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +48,20 @@ PR_REVIEW_DECISION_PROMPT = (
 
 class RunControlError(RuntimeError):
     pass
+
+
+async def restore_analysis_worktree(
+    environment: ExecutionEnvironment,
+    worktree: Path,
+    head_sha: str,
+) -> None:
+    try:
+        await environment.close()
+    finally:
+        try:
+            await run_command(("git", "-C", str(worktree), "reset", "--hard", head_sha))
+        finally:
+            await run_command(("git", "-C", str(worktree), "clean", "-fdx"))
 
 
 async def record_run_failure(run_id: str, stage: str, error: BaseException) -> None:
@@ -250,6 +273,56 @@ async def _review_pull_request(run_id: str) -> None:
                     "changed_files": context.get("changed_files"),
                 }
             )
+    identity = RepositoryIdentity(run.repository.owner, run.repository.name)
+    base_sha = context.get("base_sha")
+    if not isinstance(base_sha, str):
+        raise RunControlError("Pull-request snapshot has no base SHA")
+    base_configuration = await run_command(
+        ("git", "-C", snapshot.worktree_path, "show", f"{base_sha}:.mafia.toml"),
+        check=False,
+    )
+    if base_configuration.returncode != 0 and "does not exist in" not in base_configuration.stderr:
+        raise ProjectConfigurationError(
+            f"Could not read repository .mafia.toml at {base_sha}: "
+            f"{base_configuration.stderr.strip()[-1_000:]}"
+        )
+    project_configuration = resolve_project_configuration_content(
+        identity,
+        base_configuration.stdout if base_configuration.returncode == 0 else None,
+    )
+    validation_results: list[dict[str, object]] = []
+    if project_configuration.validation_commands:
+        environment = await create_execution_environment(
+            Path(snapshot.worktree_path),
+            execution_mode=project_configuration.execution_mode,
+        )
+        try:
+            validation_results = await run_deterministic_validation(
+                environment,
+                project_configuration,
+                run_id=run.id,
+                stage=f"pull-request-{run.pull_request_number}",
+            )
+        finally:
+            await restore_analysis_worktree(
+                environment,
+                Path(snapshot.worktree_path),
+                snapshot.git_sha,
+            )
+    context["deterministic_validation"] = {
+        "status": "passed" if validation_results else "not_configured",
+        "source": project_configuration.validation_source,
+        "configuration_sha256": project_configuration.validation_sha256,
+        "commands": validation_results,
+    }
+    async with SessionFactory() as session:
+        current_run = await get_run(session, run_id)
+        current_run.project_configuration = project_configuration.snapshot()
+        current_snapshot = await session.get(SourceSnapshot, snapshot_id)
+        if current_snapshot is None:
+            raise RunControlError("Pull-request source snapshot is missing")
+        current_snapshot.issue_data = context
+        await session.commit()
     run = await _transition_state(
         run_id,
         RunState.REVIEWING_PR,

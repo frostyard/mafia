@@ -1,3 +1,5 @@
+# pyright: reportPrivateUsage=false
+
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from types import ModuleType
@@ -35,6 +37,13 @@ from mafia.domain.enums import (
 from mafia.domain.schemas import DecisionSubmission
 from mafia.services import lifecycle, operations, run_control
 from mafia.services.artifacts import persist_artifact
+from mafia.services.commands import CommandResult
+from mafia.services.project_config import (
+    ProjectValidationError,
+    ResolvedProjectConfiguration,
+    ValidationCommand,
+)
+from mafia.services.repositories import RepositoryIdentity
 from mafia.services.runs import get_run
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -936,6 +945,201 @@ class FakePullRequestReviewService:
             return artifact
 
 
+class ValidationEnvironment:
+    kind = "test"
+
+    def __init__(self, calls: list[str]) -> None:
+        self.calls = calls
+
+    def activity_snapshot(self) -> dict[str, object]:
+        return {}
+
+    async def run(self, command: str, *, timeout_seconds: float | None = None) -> object:
+        del command, timeout_seconds
+        raise AssertionError("Validation is mocked in this test")
+
+    def read_file(self, path: str, line_start: int = 1, line_end: int = 500) -> str:
+        del path, line_start, line_end
+        raise NotImplementedError
+
+    def write_file(self, path: str, content: str) -> str:
+        del path, content
+        raise NotImplementedError
+
+    async def tool_run(self, command: str, timeout_seconds: int = 120) -> dict[str, object]:
+        del command, timeout_seconds
+        raise NotImplementedError
+
+    async def close(self) -> None:
+        self.calls.append("close")
+
+    def description(self) -> dict[str, object]:
+        return {"environment": self.kind}
+
+
+def pull_request_validation_configuration() -> ResolvedProjectConfiguration:
+    return ResolvedProjectConfiguration(
+        execution_mode="host",
+        validation_commands=(ValidationCommand(name="tests", run="pytest"),),
+        validation_source="repository",
+        validation_sha256="a" * 64,
+    )
+
+
+@pytest.mark.asyncio
+async def test_pull_request_review_validates_before_model_review(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session)
+        run.workflow_type = WorkflowType.PULL_REQUEST_REVIEW
+        run.requirement_type = None
+        run.requirement_text = None
+        run.pull_request_number = 42
+        await session.commit()
+
+    calls: list[str] = []
+    environment = ValidationEnvironment(calls)
+
+    async def capture(
+        session: AsyncSession, current_run: Run, repository: Repository
+    ) -> tuple[SourceSnapshot, dict[str, Any]]:
+        del repository
+        snapshot = SourceSnapshot(
+            run_id=current_run.id,
+            git_sha="b" * 40,
+            reason="pr-review-42",
+            manifest={"files": ["app.py"]},
+            issue_data={"base_sha": "a" * 40, "head_sha": "b" * 40, "files": []},
+            instructions=[],
+            worktree_path=str(tmp_path),
+        )
+        session.add(snapshot)
+        await session.flush()
+        return snapshot, snapshot.issue_data or {}
+
+    class RecordingReviewService(FakePullRequestReviewService):
+        async def review(
+            self, run: Run, snapshot: SourceSnapshot, context: dict[str, Any], *, model: str
+        ) -> PullRequestReview:
+            calls.append("review")
+            assert context["deterministic_validation"]["status"] == "passed"
+            return await super().review(run, snapshot, context, model=model)
+
+    async def validate(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        del args, kwargs
+        calls.append("validation")
+        return [{"name": "tests", "returncode": 0}]
+
+    def resolve_configuration(
+        identity: RepositoryIdentity, repository_content: str | None
+    ) -> ResolvedProjectConfiguration:
+        del identity, repository_content
+        return pull_request_validation_configuration()
+
+    monkeypatch.setattr(run_control, "capture_pull_request_snapshot", capture)
+    monkeypatch.setattr(run_control, "PullRequestReviewService", RecordingReviewService)
+    monkeypatch.setattr(
+        run_control,
+        "run_command",
+        AsyncMock(return_value=CommandResult((), 0, "", "")),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        run_control,
+        "resolve_project_configuration_content",
+        resolve_configuration,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        run_control, "create_execution_environment", AsyncMock(return_value=environment), raising=False
+    )
+    monkeypatch.setattr(run_control, "run_deterministic_validation", validate, raising=False)
+
+    await run_control.advance_run(run.id)
+
+    assert calls == ["validation", "close", "review", "review"]
+
+
+@pytest.mark.asyncio
+async def test_pull_request_validation_failure_prevents_model_review_and_fails_guarded_run(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session)
+        run.workflow_type = WorkflowType.PULL_REQUEST_REVIEW
+        run.requirement_type = None
+        run.requirement_text = None
+        run.pull_request_number = 42
+        await session.commit()
+
+    calls: list[str] = []
+    environment = ValidationEnvironment(calls)
+
+    async def capture(
+        session: AsyncSession, current_run: Run, repository: Repository
+    ) -> tuple[SourceSnapshot, dict[str, Any]]:
+        del repository
+        snapshot = SourceSnapshot(
+            run_id=current_run.id,
+            git_sha="b" * 40,
+            reason="pr-review-42",
+            manifest={},
+            issue_data={"base_sha": "a" * 40},
+            instructions=[],
+            worktree_path=str(tmp_path),
+        )
+        session.add(snapshot)
+        await session.flush()
+        return snapshot, snapshot.issue_data or {}
+
+    class NoModelReviewService:
+        async def review(self, *args: object, **kwargs: object) -> PullRequestReview:
+            del args, kwargs
+            calls.append("review")
+            raise AssertionError("Model review must not start after validation fails")
+
+    async def fail_validation(*args: object, **kwargs: object) -> list[dict[str, object]]:
+        del args, kwargs
+        calls.append("validation")
+        raise ProjectValidationError("Project validation failed: tests")
+
+    def resolve_configuration(
+        identity: RepositoryIdentity, repository_content: str | None
+    ) -> ResolvedProjectConfiguration:
+        del identity, repository_content
+        return pull_request_validation_configuration()
+
+    command = AsyncMock(return_value=CommandResult((), 0, "", ""))
+    monkeypatch.setattr(run_control, "capture_pull_request_snapshot", capture)
+    monkeypatch.setattr(run_control, "PullRequestReviewService", NoModelReviewService)
+    monkeypatch.setattr(run_control, "run_command", command, raising=False)
+    monkeypatch.setattr(
+        run_control,
+        "resolve_project_configuration_content",
+        resolve_configuration,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        run_control, "create_execution_environment", AsyncMock(return_value=environment), raising=False
+    )
+    monkeypatch.setattr(run_control, "run_deterministic_validation", fail_validation, raising=False)
+
+    await run_control._run_guarded(
+        run.id,
+        "pull_request_review",
+        lambda: run_control.advance_run(run.id),
+    )
+
+    async with session_factory() as session:
+        failed = await get_run(session, run.id)
+    assert calls == ["validation", "close"]
+    assert command.await_args_list[-2].args[0][-2:] == ("--hard", "b" * 40)
+    assert command.await_args_list[-1].args[0][-2:] == ("clean", "-fdx")
+    assert failed.state == RunState.FAILED
+    assert failed.failure_code == "pull_request_review_failed"
+
+
 @pytest.mark.asyncio
 async def test_pull_request_review_persists_post_action(
     session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -967,6 +1171,15 @@ async def test_pull_request_review_persists_post_action(
 
     monkeypatch.setattr(run_control, "capture_pull_request_snapshot", capture)
     monkeypatch.setattr(run_control, "PullRequestReviewService", FakePullRequestReviewService)
+    monkeypatch.setattr(
+        run_control,
+        "run_command",
+        AsyncMock(
+            return_value=CommandResult(
+                (), 1, "", "path '.mafia.toml' does not exist in aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            )
+        ),
+    )
     await run_control.advance_run(run.id)
 
     async with session_factory() as session:
