@@ -11,11 +11,18 @@ from mafia.db.session import SessionFactory
 from mafia.domain.enums import PhaseState, RunState
 from mafia.services.commands import CommandError, run_command
 from mafia.services.github import get_pr, gh_json
+from mafia.services.operations import ActiveWorkError, has_active_work, launch_background_work
 from mafia.services.repositories import (
     RepositoryIdentity,
     require_repository_owner,
 )
-from mafia.services.runs import get_run, transition_run
+from mafia.services.run_control import resolve_phase_pending_action
+from mafia.services.runs import (
+    PendingActionSpec,
+    get_run,
+    transition_run,
+    transition_with_pending_action,
+)
 from mafia.services.workspaces import WorkspaceService, reset_and_verify_origin
 from sqlalchemy import delete, select
 
@@ -60,39 +67,6 @@ async def _reconciliation_lock(run_id: str) -> AsyncGenerator[None]:
     lock = _reconciliation_locks.setdefault(run_id, asyncio.Lock())
     async with lock:
         yield
-
-
-async def _create_recovery_pr(
-    identity: RepositoryIdentity,
-    phase: Phase,
-    default_branch: str,
-    commit: str,
-) -> str:
-    require_repository_owner(identity)
-    body = (
-        "## Summary\n\n"
-        f"Recovered phase {phase.ordinal} after the local process stopped.\n\n"
-        f"## Source\n\nPlanned from `{phase.source_sha}` and committed as `{commit}`."
-    )
-    result = await run_command(
-        (
-            "gh",
-            "pr",
-            "create",
-            "--repo",
-            identity.slug,
-            "--base",
-            default_branch,
-            "--head",
-            phase.branch_name or "",
-            "--title",
-            f"Phase {phase.ordinal}: {phase.title}",
-            "--body",
-            body,
-        ),
-        cwd=Path(phase.worktree_path) if phase.worktree_path else None,
-    )
-    return result.stdout.strip()
 
 
 async def _branch_commit(
@@ -229,9 +203,7 @@ async def _mark_interrupted_run_failed(run_id: str, message: str) -> None:
         if phase is not None:
             phase.status = PhaseState.FAILED
         run.failure_code = (
-            "pull_request_review_post_failed"
-            if run.state == RunState.POSTING_PR_REVIEW
-            else "interrupted"
+            "pull_request_review_post_failed" if run.state == RunState.POSTING_PR_REVIEW else "interrupted"
         )
         run.failure_message = message
         await session.commit()
@@ -242,6 +214,7 @@ async def _mark_interrupted_run_failed(run_id: str, message: str) -> None:
             RunState.REVIEWING_PLAN,
             RunState.ADJUDICATING_PLAN,
             RunState.PERSISTING_PLAN,
+            RunState.REGROUNDING,
             RunState.EXECUTING_PHASE,
             RunState.REVIEWING_IMPLEMENTATION,
             RunState.ADJUDICATING_IMPLEMENTATION,
@@ -273,6 +246,7 @@ async def recover_interrupted_runs() -> None:
         RunState.REVIEWING_PLAN,
         RunState.ADJUDICATING_PLAN,
         RunState.PERSISTING_PLAN,
+        RunState.REGROUNDING,
         RunState.EXECUTING_PHASE,
         RunState.REVIEWING_IMPLEMENTATION,
         RunState.ADJUDICATING_IMPLEMENTATION,
@@ -299,53 +273,16 @@ async def recover_interrupted_runs() -> None:
                 "message": "The backend process stopped before this operation completed.",
             }
         await session.commit()
-        run_ids = list(
-            await session.scalars(select(Run.id).where(Run.state.in_(recoverable_states)))
-        )
+        run_ids = list(await session.scalars(select(Run.id).where(Run.state.in_(recoverable_states))))
     for run_id in run_ids:
         try:
-            async with SessionFactory() as session:
-                run = await get_run(session, run_id)
-                phase = await session.scalar(
-                    select(Phase).where(
-                        Phase.run_id == run.id,
-                        Phase.status.in_({PhaseState.EXECUTING, PhaseState.WAITING_FOR_MERGE}),
-                    )
-                )
-                identity = RepositoryIdentity(run.repository.owner, run.repository.name)
-                require_repository_owner(identity)
-                cache_path = run.repository.cache_path
-                default_branch = run.repository.default_branch
-            if phase is None or phase.branch_name is None:
-                await _mark_interrupted_run_failed(
-                    run_id,
-                    "The process stopped during model work. Start the workflow to retry.",
-                )
-                continue
-            pr = await pull_request_for_branch(identity, phase.branch_name)
-            commit = await _branch_commit(identity, phase, cache_path)
-            if pr is None and commit is not None:
-                if default_branch is None:
-                    raise ReconciliationError("Repository default branch is unknown")
-                url = await _create_recovery_pr(
-                    identity,
-                    phase,
-                    default_branch,
-                    commit,
-                )
-                pr = await pull_request_for_branch(identity, phase.branch_name)
-                if pr is None:
-                    raise ReconciliationError(f"Created {url} but could not retrieve it")
-            if pr is not None and commit is not None:
-                await _record_recovered_pr(run_id, phase.id, commit, pr)
-            else:
-                await _mark_interrupted_run_failed(
-                    run_id,
-                    "The process stopped before a validated phase branch was pushed. "
-                    "Start the workflow to retry the phase.",
-                )
+            # Startup only records interruption. Retry owns recovery and any external work.
+            await _mark_interrupted_run_failed(
+                run_id,
+                "The process stopped before this work completed. Retry the run to continue.",
+            )
         except Exception:
-            logger.exception("Failed to recover interrupted run %s", run_id)
+            logger.exception("Failed to mark interrupted run %s as failed", run_id)
     async with SessionFactory() as session:
         await session.execute(delete(RepositoryLock))
         await session.commit()
@@ -426,8 +363,6 @@ async def _reconcile_run(run_id: str) -> dict[str, Any]:
         phase = await session.get(Phase, phase_id)
         if phase is None:
             raise ReconciliationError("Active phase disappeared during reconciliation")
-        phase.status = PhaseState.MERGED
-        phase.merge_sha = merge_sha
         remaining = list(
             await session.scalars(
                 select(Phase)
@@ -436,38 +371,70 @@ async def _reconcile_run(run_id: str) -> dict[str, Any]:
             )
         )
         material_drift = bool(external_changes) and _touches_planned_files(external_changes, remaining)
+        if material_drift and has_active_work(run_id):
+            raise ActiveWorkError(f"Run {run_id} already has active work")
+        pending_action = None
+        next_phase: Phase | None = None
         if material_drift:
             next_state = RunState.REGROUNDING
             event_type = "source.material_drift_detected"
         elif remaining:
             next_phase = remaining[0]
-            next_phase.status = PhaseState.READY
-            next_phase.source_sha = default_sha
             next_state = RunState.READY_FOR_PHASE
             event_type = "phase.ready"
+            pending_action = await resolve_phase_pending_action(
+                run,
+                phase_id=next_phase.id,
+                source_sha=default_sha,
+                ordinal=next_phase.ordinal,
+                title=next_phase.title,
+            )
         else:
             next_state = RunState.COMPLETED
             event_type = "run.completed"
-        await session.commit()
-        run = await transition_run(
-            session,
-            run.id,
-            next_state,
-            expected_version=run.version,
-            event_type=event_type,
-            payload={
-                "merged_phase_id": phase.id,
-                "merge_sha": merge_sha,
-                "default_branch": metadata.default_branch,
-                "default_sha": default_sha,
-                "external_changes": sorted(external_changes),
-            },
-        )
+        phase.status = PhaseState.MERGED
+        phase.merge_sha = merge_sha
+        if next_phase is not None:
+            next_phase.status = PhaseState.READY
+            next_phase.source_sha = default_sha
+        transition_payload: dict[str, object] = {
+            "merged_phase_id": phase.id,
+            "merge_sha": merge_sha,
+            "default_branch": metadata.default_branch,
+            "default_sha": default_sha,
+            "external_changes": sorted(external_changes),
+        }
+        if pending_action is None:
+            await session.commit()
+            run = await transition_run(
+                session,
+                run.id,
+                next_state,
+                expected_version=run.version,
+                event_type=event_type,
+                payload=transition_payload,
+            )
+        else:
+            run = await transition_with_pending_action(
+                session,
+                run.id,
+                next_state,
+                expected_version=run.version,
+                event_type=event_type,
+                pending=PendingActionSpec(
+                    kind=pending_action.kind,
+                    phase_id=pending_action.phase_id,
+                    payload=pending_action.payload,
+                ),
+                payload=transition_payload,
+            )
         worktree_path = phase.worktree_path
         cache_path = run.repository.cache_path
 
     if worktree_path and cache_path:
         await workspaces.remove_worktree(Path(cache_path), Path(worktree_path))
+    if material_drift:
+        launch_background_work(run_id, lambda: _advance_regrounding(run_id))
     return {
         "changed": True,
         "state": run.state.value,
@@ -476,13 +443,22 @@ async def _reconcile_run(run_id: str) -> dict[str, Any]:
     }
 
 
+async def _advance_regrounding(run_id: str) -> None:
+    from mafia.services.run_control import advance_run, record_run_failure
+
+    try:
+        await advance_run(run_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        await record_run_failure(run_id, "planning", error)
+
+
 async def monitor_merges(stop: asyncio.Event, poll_seconds: float) -> None:
     while not stop.is_set():
         async with SessionFactory() as session:
             run_ids = list(
-                await session.scalars(
-                    select(Run.id).where(Run.state == RunState.WAITING_FOR_MERGE)
-                )
+                await session.scalars(select(Run.id).where(Run.state == RunState.WAITING_FOR_MERGE))
             )
         for run_id in run_ids:
             try:

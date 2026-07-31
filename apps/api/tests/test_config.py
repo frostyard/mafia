@@ -39,6 +39,10 @@ def test_model_pairs_preserve_defaults_and_allow_overrides() -> None:
     assert configured.required_models == {"claude-sonnet-5", "gpt-5.7"}
 
 
+def test_settings_have_no_checkpoint_directory() -> None:
+    assert not hasattr(settings_for_test(), "checkpoints_dir")
+
+
 def test_model_pairs_parse_json_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv(
         "TEST_MAFIA_MODEL_PAIRS",

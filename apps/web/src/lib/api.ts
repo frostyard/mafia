@@ -1,5 +1,6 @@
 import type {
   ApiError,
+  DecisionPayload,
   Evidence,
   ModelAvailability,
   Project,
@@ -109,10 +110,31 @@ export function cancelRun(id: string): Promise<RunActivity> {
   });
 }
 
-export function prepareRunRetry(id: string): Promise<RunActivity> {
+export function startRun(id: string): Promise<RunActivity> {
+  return request<RunActivity>(`/api/runs/${encodeURIComponent(id)}/start`, {
+    method: "POST",
+  });
+}
+
+export function retryRun(id: string): Promise<RunActivity> {
   return request<RunActivity>(`/api/runs/${encodeURIComponent(id)}/retry`, {
     method: "POST",
   });
+}
+
+export function submitDecision(
+  runId: string,
+  actionId: string,
+  payload: DecisionPayload,
+): Promise<RunActivity> {
+  return request<RunActivity>(
+    `/api/runs/${encodeURIComponent(runId)}/decisions/${encodeURIComponent(actionId)}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    },
+  );
 }
 
 export function resetRunToSpecification(id: string): Promise<Run> {

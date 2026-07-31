@@ -5,7 +5,16 @@ group: Workflows
 order: 10
 ---
 
-Create a run with an `owner/repository`, a GitHub issue number or URL or written requirement, and a primary model. Open the run and select **Start workflow**.
+Create a run with an `owner/repository`, a GitHub issue number or URL or written
+requirement, and a primary model. Start it through the run page or
+`POST /api/runs/{id}/start`. The API owns the launched background work, so the
+browser can disconnect without cancelling it.
+
+SQLite holds the run and its single current `pending_action`. Submit approval,
+refinement, phase, or publication choices to
+`POST /api/runs/{id}/decisions/{action_id}`. The run page does not guess which
+control to show from state: it renders the persisted action and polls activity
+every three seconds for changes.
 
 ## Durable workflow
 
@@ -28,7 +37,11 @@ Create a run with an `owner/repository`, a GitHub issue number or URL or written
   <figcaption>The run workspace combines durable stage state, artifact revisions, source metrics, and human-readable planning activity.</figcaption>
 </figure>
 
-Workflow interrupts, checkpoints, artifacts, source evidence, approvals, operations, and execution state persist under `data/`. On startup, mafia reconciles interrupted work and existing pull requests before retrying side effects.
+Run state, pending actions, artifacts, source evidence, approvals, operations,
+and execution state persist under `MAFIA_DATA_DIR`. If the API restarts during
+working state, startup reconciliation marks the run failed rather than resuming
+it. Use `POST /api/runs/{id}/retry` or the Retry control to explicitly begin the
+next attempt from persisted state.
 
 The implementation model's targeted checks are supplemental. Repository or host-owned `.mafia.toml` commands form the mechanical gate and run again after remediation.
 
@@ -60,4 +73,5 @@ After a specification exists, **Adjust specification** returns the run to that s
 
 Active model work is cancelled first. The active plan and phases without a pull request are invalidated. Merged phases and phases with an open pull request remain immutable and continue to gate later work.
 
-The reset creates a new durable AG-UI thread so stale artifact or phase decisions cannot resume.
+The reset replaces the current pending action so stale artifact or phase
+decisions cannot be submitted.

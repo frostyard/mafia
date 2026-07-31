@@ -38,8 +38,7 @@ wheel plus its locked dependencies. Re-running it updates that environment to
 the release contents.
 
 Keep `MAFIA_DATA_DIR` on persistent storage. It contains the SQLite database,
-checkpoints, repository caches, analysis worktrees, and implementation
-worktrees.
+repository caches, analysis worktrees, and implementation worktrees.
 
 Execution mode is configured per project in the host project configuration;
 deployment environment files do not select it. See `docs/project-configuration.md`.
@@ -68,15 +67,35 @@ default both services bind only to loopback:
 - FastAPI: `http://127.0.0.1:8000`
 
 Configure the listeners with `MAFIA_WEB_HOST`, `MAFIA_WEB_PORT`,
-`MAFIA_API_HOST`, and `MAFIA_API_PORT`. `MAFIA_API_URL` and `AGENT_URL` must
-address the FastAPI listener. The default values are suitable when both
-processes run on the same host.
+`MAFIA_API_HOST`, and `MAFIA_API_PORT`. `MAFIA_API_URL` must address the
+FastAPI listener. The default values are suitable when both processes run on
+the same host.
 
 MAFIA supports exactly one API worker (`MAFIA_API_WORKERS=1`). Do not launch
 Uvicorn or Gunicorn with multiple workers: active-work cancellation is
 process-local, so multiple API processes can publish conflicting run state. Run
 only one API service instance for a deployment; horizontal API scaling is not
 supported.
+
+## Breaking control-plane upgrade
+
+This release intentionally discards all existing runtime data. Stop both
+services, set the data directory explicitly for each destructive or migration
+command, reset it with its required confirmation, run Alembic once, and only
+then restart the services. Do not use `bin/api` for the migration because it
+starts a blocking API process after applying migrations.
+
+```bash
+sudo systemctl stop mafia.target
+sudo -u mafia env MAFIA_DATA_DIR=/var/lib/mafia /opt/mafia/current/bin/reset-data --confirm-destructive-reset
+sudo -u mafia bash -c 'cd /opt/mafia/current && MAFIA_DATA_DIR=/var/lib/mafia ./.venv/bin/python -m alembic -c alembic.ini upgrade head'
+sudo systemctl start mafia.target
+```
+
+`reset-data` refuses unsafe targets and any target whose path contains a
+symlink component. Verify the intended persistent directory before confirming:
+the reset permanently removes its database, caches, worktrees, and local
+configuration.
 
 ## systemd
 

@@ -227,7 +227,7 @@ async def test_cancel_timeout_keeps_working_state(monkeypatch, active_run) -> No
         assert persisted.state == RunState.GENERATING_SPEC
 ```
 
-Add equivalent stalled-retry and reset tests asserting no replacement thread/state is published while work remains active.
+Add equivalent stalled-retry and reset tests asserting no replacement state is published while work remains active.
 
 - [ ] **Step 2: Run focused control tests and verify failure**
 
@@ -256,7 +256,7 @@ Pass `workers=settings.api_workers` to `uvicorn.run`. Document that external mul
 
 - [ ] **Step 5: Run control, restart, and config tests**
 
-Run: `uv run --frozen pytest -q apps/api/tests/test_operations.py apps/api/tests/test_agui_restart.py apps/api/tests/test_config.py`
+Run: `uv run --frozen pytest -q apps/api/tests/test_operations.py apps/api/tests/test_config.py`
 
 Expected: all pass in an isolated settings environment established by Task 8; until then, run from `/tmp/opencode` with `uv run --project "$PWD"` if the repository `.env` affects config tests.
 

@@ -1,9 +1,8 @@
 "use client";
 
-import { useAgent } from "@copilotkit/react-core/v2";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
-import { cancelRun, getRunActivity, prepareRunRetry } from "@/lib/api";
+import { cancelRun, getRunActivity, retryRun } from "@/lib/api";
 import {
   eventLabel,
   humanizeIdentifier,
@@ -251,10 +250,15 @@ export function VisibilityRail({
   const [isControlling, setIsControlling] = useState(false);
   const activityRef = useRef(initialActivity);
   const router = useRouter();
-  const { agent, isReady } = useAgent({ agentId: "mafia" });
+  const refreshRef = useRef(router.refresh);
+  const shouldPoll = !isTerminalActivity(activity);
 
   useEffect(() => {
-    if (isTerminalActivity(activityRef.current)) return;
+    refreshRef.current = router.refresh;
+  });
+
+  useEffect(() => {
+    if (!shouldPoll) return;
     let disposed = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     async function poll() {
@@ -264,7 +268,7 @@ export function VisibilityRail({
         if (disposed) return;
         setPollError(undefined);
         if (shouldRefreshRunPage(activityRef.current, next)) {
-          router.refresh();
+          refreshRef.current();
         }
         activityRef.current = next;
         setActivity(next);
@@ -282,7 +286,7 @@ export function VisibilityRail({
       disposed = true;
       if (timer) clearTimeout(timer);
     };
-  }, [router, runId]);
+  }, [runId, shouldPoll]);
 
   async function cancel() {
     setControlError(undefined);
@@ -301,19 +305,13 @@ export function VisibilityRail({
     setControlError(undefined);
     setIsControlling(true);
     try {
-      setActivity(await prepareRunRetry(runId));
-      agent.addMessage({
-        id: crypto.randomUUID(),
-        role: "user",
-        content: `Retry workflow run ${runId}.`,
-      });
-      await agent.runAgent();
+      const next = await retryRun(runId);
+      activityRef.current = next;
+      setActivity(next);
+      router.refresh();
     } catch (error) {
       setControlError((error as { message?: string }).message ?? "Retry failed.");
-    } finally {
-      setIsControlling(false);
-      router.refresh();
-    }
+    } finally { setIsControlling(false); }
   }
 
   const progress = collectProgress(activity);
@@ -341,7 +339,7 @@ export function VisibilityRail({
               Cancel work
             </button>
           ) : null}
-          {activity.can_retry && activity.state !== "failed" ? (
+          {activity.can_retry ? (
             <button
               className="button button-small"
               disabled={isControlling}
@@ -352,11 +350,6 @@ export function VisibilityRail({
             </button>
           ) : null}
         </div>
-        {activity.can_retry && activity.state !== "failed" && !isReady ? (
-          <p className="operation-error">
-            The agent connection is not ready. Retry will attempt to reconnect it.
-          </p>
-        ) : null}
         {controlError ? <p className="operation-error">{controlError}</p> : null}
         {pollError ? <p className="operation-error">{pollError}</p> : null}
       </section>

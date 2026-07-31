@@ -6,7 +6,6 @@ from unittest.mock import AsyncMock
 import pytest
 from mafia.db.base import Base
 from mafia.db.models import (
-    AGUISnapshot,
     Artifact,
     AuditEvent,
     Decision,
@@ -70,6 +69,99 @@ async def test_active_run_guard_covers_operation_gaps() -> None:
         assert operations.has_active_work("run-guard") is True
 
     assert operations.has_active_work("run-guard") is False
+
+
+@pytest.mark.asyncio
+async def test_run_work_lock_keeps_queued_callers_on_one_lock_until_all_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DelayedHandoffLock:
+        def __init__(self) -> None:
+            self._locked = False
+            self._waiters: list[asyncio.Future[None]] = []
+            self.waiter_queued = asyncio.Event()
+            self.third_queued = asyncio.Event()
+
+        def locked(self) -> bool:
+            return self._locked
+
+        async def acquire(self) -> bool:
+            if not self._locked and not self._waiters:
+                self._locked = True
+                return True
+            waiter = asyncio.get_running_loop().create_future()
+            self._waiters.append(waiter)
+            if len(self._waiters) == 1:
+                self.waiter_queued.set()
+            else:
+                self.third_queued.set()
+            await waiter
+            return True
+
+        def release(self) -> None:
+            self._locked = False
+
+        def grant_next(self) -> None:
+            self._locked = True
+            self._waiters.pop(0).set_result(None)
+
+        async def __aenter__(self) -> None:
+            await self.acquire()
+
+        async def __aexit__(self, *args: object) -> None:
+            self.release()
+
+    locks: list[DelayedHandoffLock] = []
+
+    def new_lock() -> DelayedHandoffLock:
+        lock = DelayedHandoffLock()
+        locks.append(lock)
+        return lock
+
+    monkeypatch.setattr(operations.asyncio, "Lock", new_lock)
+    operations._run_locks.clear()  # pyright: ignore[reportPrivateUsage]
+    operations._run_lock_users.clear()  # pyright: ignore[reportPrivateUsage]
+    holder_entered = asyncio.Event()
+    release_holder = asyncio.Event()
+    waiter_entered = asyncio.Event()
+    release_waiter = asyncio.Event()
+    contender_entered = asyncio.Event()
+    release_contender = asyncio.Event()
+    active: set[str] = set()
+
+    async def hold(name: str, entered: asyncio.Event, release: asyncio.Event) -> None:
+        async with operations.run_work_lock("run-lock-race"):
+            active.add(name)
+            assert len(active) == 1
+            entered.set()
+            await release.wait()
+            active.remove(name)
+
+    holder = asyncio.create_task(hold("holder", holder_entered, release_holder))
+    await holder_entered.wait()
+    waiter = asyncio.create_task(hold("waiter", waiter_entered, release_waiter))
+    lock = locks[0]
+    await lock.waiter_queued.wait()
+
+    release_holder.set()
+    await holder
+    assert operations._run_locks["run-lock-race"] is lock  # pyright: ignore[reportPrivateUsage]
+
+    contender = asyncio.create_task(hold("contender", contender_entered, release_contender))
+    await lock.third_queued.wait()
+    lock.grant_next()
+    await waiter_entered.wait()
+    assert active == {"waiter"}
+    release_waiter.set()
+    await waiter
+    assert operations._run_locks["run-lock-race"] is lock  # pyright: ignore[reportPrivateUsage]
+
+    lock.grant_next()
+    await contender_entered.wait()
+    assert active == {"contender"}
+    release_contender.set()
+    await contender
+    assert "run-lock-race" not in operations._run_locks  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.asyncio
@@ -138,8 +230,7 @@ async def test_tracked_operation_persists_cancellation_when_caller_is_cancelled_
         async with factory() as session:
             row = await session.scalar(
                 select(Operation).where(
-                    Operation.idempotency_key
-                    == f"{run_id}:-:model.plan_generation:cancelled-snapshot"
+                    Operation.idempotency_key == f"{run_id}:-:model.plan_generation:cancelled-snapshot"
                 )
             )
         if row is not None and row.status == "cancelled":
@@ -193,39 +284,6 @@ async def test_activity_detects_stale_heartbeat(
     assert result.stall_reason is not None
     assert "backend is alive" in result.stall_reason
     assert result.source_sha == "a" * 40
-
-
-@pytest.mark.asyncio
-async def test_stalled_retry_closes_operation_and_fails_run(
-    operation_session_factory: OperationSessionFixture,
-) -> None:
-    factory, run_id = operation_session_factory
-    stale = datetime.now(UTC) - timedelta(minutes=10)
-    async with factory() as session:
-        operation = Operation(
-            idempotency_key=f"{run_id}:-:model.plan_generation:snapshot-1",
-            run_id=run_id,
-            operation_type="model.plan_generation",
-            request_hash="b" * 64,
-            status="running",
-            model="gpt-5.6-sol",
-            attempt=1,
-            timeout_seconds=900,
-            heartbeat_at=stale,
-            progress_at=stale,
-            detail={},
-        )
-        session.add(operation)
-        await session.commit()
-        operation_id = operation.id
-
-    result = await activity.prepare_retry(run_id)
-
-    assert result.state == RunState.FAILED
-    async with factory() as session:
-        operation = await session.get(Operation, operation_id)
-    assert operation is not None
-    assert operation.status == "cancelled"
 
 
 @pytest.mark.asyncio
@@ -289,102 +347,7 @@ async def test_cancel_preserves_naturally_completed_state(
 
 
 @pytest.mark.asyncio
-async def test_stalled_retry_timeout_keeps_working_state(
-    operation_session_factory: OperationSessionFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    factory, run_id = operation_session_factory
-    stale = datetime.now(UTC) - timedelta(minutes=10)
-    async with factory() as session:
-        session.add(
-            Operation(
-                idempotency_key=f"{run_id}:-:model.plan_generation:timeout",
-                run_id=run_id,
-                operation_type="model.plan_generation",
-                request_hash="b" * 64,
-                status="running",
-                model="gpt-5.6-sol",
-                attempt=1,
-                timeout_seconds=900,
-                heartbeat_at=stale,
-                progress_at=stale,
-                detail={},
-            )
-        )
-        await session.commit()
-    monkeypatch.setattr(
-        activity,
-        "_wait_for_active_work",
-        AsyncMock(side_effect=activity.RunControlError("still stopping")),
-    )
-
-    with pytest.raises(activity.RunControlError, match="still stopping"):
-        await activity.prepare_retry(run_id)
-
-    async with factory() as session:
-        run = await session.get(Run, run_id)
-    assert run is not None
-    assert run.state == RunState.GENERATING_PLAN
-
-
-@pytest.mark.asyncio
-async def test_stalled_retry_preserves_naturally_completed_state_without_retry_ready_event(
-    operation_session_factory: OperationSessionFixture,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    factory, run_id = operation_session_factory
-    stale = datetime.now(UTC) - timedelta(minutes=10)
-    async with factory() as session:
-        run = await session.get(Run, run_id)
-        assert run is not None
-        expected_version = run.version + 1
-        session.add(
-            Operation(
-                idempotency_key=f"{run_id}:-:model.plan_generation:natural-completion",
-                run_id=run_id,
-                operation_type="model.plan_generation",
-                request_hash="b" * 64,
-                status="running",
-                model="gpt-5.6-sol",
-                attempt=1,
-                timeout_seconds=900,
-                heartbeat_at=stale,
-                progress_at=stale,
-                detail={},
-            )
-        )
-        await session.commit()
-
-    async def finish_work(run_id: str) -> None:
-        async with factory() as session:
-            run = await session.get(Run, run_id)
-            assert run is not None
-            await activity.transition_run(
-                session,
-                run.id,
-                RunState.FAILED,
-                expected_version=run.version,
-                event_type="run.naturally_completed",
-            )
-
-    monkeypatch.setattr(activity, "_wait_for_active_work", finish_work)
-
-    result = await activity.prepare_retry(run_id)
-
-    assert result.state == RunState.FAILED
-    assert result.version == expected_version
-    async with factory() as session:
-        retry_ready = await session.scalar(
-            select(AuditEvent).where(
-                AuditEvent.run_id == run_id,
-                AuditEvent.event_type == "run.retry_ready",
-            )
-        )
-    assert retry_ready is None
-
-
-@pytest.mark.asyncio
-async def test_reset_to_specification_rotates_thread_and_invalidates_future_work(
+async def test_reset_to_specification_does_not_rotate_thread_and_invalidates_future_work(
     operation_session_factory: OperationSessionFixture,
 ) -> None:
     factory, run_id = operation_session_factory
@@ -421,43 +384,25 @@ async def test_reset_to_specification_rotates_thread_and_invalidates_future_work
                     plan_revision=2,
                     source_sha="a" * 40,
                     pr_number=42 if ordinal == 2 else None,
-                    pr_url=(
-                        "https://github.com/octo/repo/pull/42"
-                        if ordinal == 2
-                        else None
-                    ),
+                    pr_url=("https://github.com/octo/repo/pull/42" if ordinal == 2 else None),
                     merge_sha="b" * 40 if phase_state == PhaseState.MERGED else None,
                 )
             )
-        old_thread_id = run.thread_id
-        session.add(
-            AGUISnapshot(
-                scope="local-user",
-                thread_id=old_thread_id,
-                snapshot={},
-            )
-        )
         await session.commit()
 
     reset = await activity.reset_to_specification(run_id)
 
     assert reset.state == RunState.AWAITING_SPEC_DECISION
     assert reset.active_plan_revision is None
-    assert reset.thread_id != old_thread_id
     async with factory() as session:
         phases = list(
-            await session.scalars(
-                select(Phase).where(Phase.run_id == run_id).order_by(Phase.ordinal)
-            )
+            await session.scalars(select(Phase).where(Phase.run_id == run_id).order_by(Phase.ordinal))
         )
         decision = await session.scalar(
             select(Decision).where(
                 Decision.run_id == run_id,
                 Decision.decision_type == DecisionType.RESET_SPECIFICATION,
             )
-        )
-        snapshot = await session.scalar(
-            select(AGUISnapshot).where(AGUISnapshot.thread_id == old_thread_id)
         )
         event = await session.scalar(
             select(AuditEvent).where(
@@ -470,7 +415,6 @@ async def test_reset_to_specification_rotates_thread_and_invalidates_future_work
         (2, PhaseState.WAITING_FOR_MERGE),
     ]
     assert decision is not None
-    assert snapshot is None
     assert event is not None
     assert event.payload["invalidated_phase_ordinals"] == [3, 4]
     assert event.payload["preserved_phase_ordinals"] == [1, 2]
@@ -486,7 +430,6 @@ async def test_specification_reset_timeout_keeps_active_thread_and_state(
         run = await session.get(Run, run_id)
         assert run is not None
         run.active_spec_revision = 1
-        original_thread_id = run.thread_id
         session.add(
             Artifact(
                 run_id=run.id,
@@ -511,7 +454,6 @@ async def test_specification_reset_timeout_keeps_active_thread_and_state(
         run = await session.get(Run, run_id)
     assert run is not None
     assert run.state == RunState.GENERATING_PLAN
-    assert run.thread_id == original_thread_id
 
 
 @pytest.mark.asyncio
@@ -524,7 +466,6 @@ async def test_specification_reset_preserves_naturally_completed_state(
         run = await session.get(Run, run_id)
         assert run is not None
         run.active_spec_revision = 1
-        original_thread_id = run.thread_id
         expected_version = run.version + 1
         session.add(
             Artifact(
@@ -556,7 +497,6 @@ async def test_specification_reset_preserves_naturally_completed_state(
 
     assert reset.state == RunState.FAILED
     assert reset.version == expected_version
-    assert reset.thread_id == original_thread_id
     async with factory() as session:
         reset_event = await session.scalar(
             select(AuditEvent).where(
@@ -582,7 +522,6 @@ async def test_reset_to_specification_continues_after_draining_nonworking_run(
         assert run is not None
         run.state = initial_state
         run.active_spec_revision = 1
-        original_thread_id = run.thread_id
         session.add(
             Artifact(
                 run_id=run.id,
@@ -610,7 +549,6 @@ async def test_reset_to_specification_continues_after_draining_nonworking_run(
     with pytest.raises(asyncio.CancelledError):
         await task
     assert reset.state == RunState.AWAITING_SPEC_DECISION
-    assert reset.thread_id != original_thread_id
     assert operations.has_active_work(run_id) is False
     async with factory() as session:
         cancellation_event = await session.scalar(

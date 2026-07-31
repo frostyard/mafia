@@ -1,6 +1,9 @@
+from dataclasses import dataclass, field
+from typing import Any
+
 from mafia.config import get_settings
-from mafia.db.models import AuditEvent, Repository, Run
-from mafia.domain.enums import RequirementType, RunState, WorkflowType
+from mafia.db.models import AuditEvent, PendingAction, Repository, Run
+from mafia.domain.enums import PendingActionKind, RequirementType, RunState, WorkflowType
 from mafia.domain.schemas import RunCreate
 from mafia.domain.state_machine import require_transition
 from mafia.services.repositories import (
@@ -9,7 +12,7 @@ from mafia.services.repositories import (
     parse_repository,
     require_repository_owner,
 )
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -24,6 +27,15 @@ class ConcurrentUpdateError(RuntimeError):
 
 class UnsupportedModelError(ValueError):
     pass
+
+
+@dataclass(frozen=True)
+class PendingActionSpec:
+    kind: PendingActionKind
+    artifact_id: str | None = None
+    phase_id: str | None = None
+    revision: int | None = None
+    payload: dict[str, Any] = field(default_factory=lambda: dict[str, Any]())
 
 
 async def create_run(session: AsyncSession, request: RunCreate) -> Run:
@@ -77,6 +89,7 @@ async def get_run(session: AsyncSession, run_id: str) -> Run:
             selectinload(Run.repository),
             selectinload(Run.artifacts),
             selectinload(Run.phases),
+            selectinload(Run.pending_action),
         )
     )
     if run is None:
@@ -107,6 +120,68 @@ async def transition_run(
     event_type: str,
     payload: dict[str, object] | None = None,
 ) -> Run:
+    _, current = await _transition_without_commit(
+        session, run_id, target, expected_version=expected_version
+    )
+    session.add(
+        AuditEvent(
+            run_id=run_id,
+            event_type=event_type,
+            from_state=current.value,
+            to_state=target.value,
+            payload=payload or {},
+        )
+    )
+    await session.commit()
+    session.expire_all()
+    return await get_run(session, run_id)
+
+
+async def transition_with_pending_action(
+    session: AsyncSession,
+    run_id: str,
+    target: RunState,
+    expected_version: int,
+    event_type: str,
+    pending: PendingActionSpec,
+    payload: dict[str, object] | None = None,
+) -> Run:
+    _, current = await _transition_without_commit(
+        session, run_id, target, expected_version=expected_version
+    )
+    await session.execute(delete(PendingAction).where(PendingAction.run_id == run_id))
+    session.add(
+        PendingAction(
+            run_id=run_id,
+            kind=pending.kind,
+            expected_run_version=expected_version + 1,
+            artifact_id=pending.artifact_id,
+            phase_id=pending.phase_id,
+            revision=pending.revision,
+            payload=pending.payload,
+        )
+    )
+    session.add(
+        AuditEvent(
+            run_id=run_id,
+            event_type=event_type,
+            from_state=current.value,
+            to_state=target.value,
+            payload=payload or {},
+        )
+    )
+    await session.commit()
+    session.expire_all()
+    return await get_run(session, run_id)
+
+
+async def _transition_without_commit(
+    session: AsyncSession,
+    run_id: str,
+    target: RunState,
+    *,
+    expected_version: int,
+) -> tuple[Run, RunState]:
     run = await get_run(session, run_id)
     require_transition(run.state, target)
     current = run.state
@@ -125,14 +200,4 @@ async def transition_run(
     if updated_id is None:
         await session.rollback()
         raise ConcurrentUpdateError(f"Run {run_id} was changed by another request")
-    session.add(
-        AuditEvent(
-            run_id=run_id,
-            event_type=event_type,
-            from_state=current.value,
-            to_state=target.value,
-            payload=payload or {},
-        )
-    )
-    await session.commit()
-    return await get_run(session, run_id)
+    return run, current

@@ -32,8 +32,27 @@ jobs:
           enable-cache: true
       - name: Install dependencies
         run: uv sync --frozen
-      - name: Run API checks
-        run: npm run check:api
+      - name: Run Ruff
+        run: uv run --frozen ruff check apps/api/src apps/api/tests
+      - name: Run Pyright
+        run: uv run --frozen pyright
+      - name: Run API tests
+        run: uv run --frozen pytest -q --junitxml=api-test-results.xml
+      - name: Annotate API test failures
+        if: failure()
+        run: |
+          python - <<'PY'
+          import xml.etree.ElementTree as ET
+
+          for case in ET.parse("api-test-results.xml").iter("testcase"):
+              failure = case.find("failure")
+              if failure is None:
+                  failure = case.find("error")
+              if failure is None:
+                  continue
+              message = (failure.get("message") or failure.text or "API test failed").replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+              print(f"::error title={case.get('name', 'API test failure')}::{message}")
+          PY
 
   web:
     name: Web / Node 22

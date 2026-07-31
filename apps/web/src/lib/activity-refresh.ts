@@ -1,7 +1,16 @@
 import type { RunActivity } from "@/lib/types";
 
 function structuralSignature(activity: RunActivity): string {
-  return [activity.state, activity.version].join("|");
+  const action = activity.pending_action;
+  return [
+    activity.state,
+    activity.version,
+    action?.id,
+    action?.kind,
+    action?.artifact_id,
+    action?.phase_id,
+    action?.revision,
+  ].join("|");
 }
 
 function completedArtifactOperations(activity: RunActivity): Set<string> {
@@ -28,6 +37,5 @@ export function shouldRefreshRunPage(
       !previousArtifacts.has(operation.id),
   );
   if (artifactCompleted) return true;
-  if (structuralSignature(previous) === structuralSignature(next)) return false;
-  return next.status_mode !== "working";
+  return structuralSignature(previous) !== structuralSignature(next);
 }

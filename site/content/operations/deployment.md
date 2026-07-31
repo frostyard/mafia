@@ -34,7 +34,7 @@ bin/install
 
 `bin/install` creates a release-local `.venv` and installs the bundled wheel and locked dependencies.
 
-Keep `MAFIA_DATA_DIR` on persistent storage. It contains the SQLite database, checkpoints, repository caches, analysis worktrees, and implementation worktrees.
+Keep `MAFIA_DATA_DIR` on persistent storage. It contains the SQLite database, pending actions, repository caches, analysis worktrees, and implementation worktrees.
 
 ## Run the services
 
@@ -50,7 +50,25 @@ Use `./start.sh` when one foreground command is preferable. It forwards terminat
 - Next.js: `http://127.0.0.1:3000`
 - FastAPI: `http://127.0.0.1:8000`
 
-Configure listeners with `MAFIA_WEB_HOST`, `MAFIA_WEB_PORT`, `MAFIA_API_HOST`, and `MAFIA_API_PORT`. `MAFIA_API_URL` and `AGENT_URL` must address FastAPI.
+Configure listeners with `MAFIA_WEB_HOST`, `MAFIA_WEB_PORT`, `MAFIA_API_HOST`, and `MAFIA_API_PORT`. `MAFIA_API_URL` must address FastAPI.
+
+## Breaking control-plane upgrade
+
+This upgrade intentionally discards existing runtime data. Stop services, set
+`MAFIA_DATA_DIR` explicitly for the destructive and migration commands, run the
+confirmed reset, run Alembic once, then restart. Do not use `bin/api` here: it
+starts a blocking API process after applying migrations.
+
+```bash
+sudo systemctl stop mafia.target
+sudo -u mafia env MAFIA_DATA_DIR=/var/lib/mafia /opt/mafia/current/bin/reset-data --confirm-destructive-reset
+sudo -u mafia bash -c 'cd /opt/mafia/current && MAFIA_DATA_DIR=/var/lib/mafia ./.venv/bin/python -m alembic -c alembic.ini upgrade head'
+sudo systemctl start mafia.target
+```
+
+`reset-data` refuses unsafe paths and any reset target containing a symlink path
+component. Confirm the target before running it; it permanently removes runtime
+state, caches, worktrees, and local configuration.
 
 ## Run with systemd
 

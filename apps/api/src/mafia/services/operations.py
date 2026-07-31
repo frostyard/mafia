@@ -2,7 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -18,6 +18,30 @@ logger = logging.getLogger(__name__)
 
 OperationDetailProvider = Callable[[], dict[str, Any]]
 _active_tasks: dict[str, dict[asyncio.Task[Any], int]] = {}
+_run_locks: dict[str, asyncio.Lock] = {}
+_run_lock_users: dict[str, int] = {}
+
+
+class ActiveWorkError(RuntimeError):
+    pass
+
+
+@asynccontextmanager
+async def run_work_lock(run_id: str) -> AsyncGenerator[None]:
+    """Serialize local state changes that hand work to a background task."""
+    lock = _run_locks.setdefault(run_id, asyncio.Lock())
+    _run_lock_users[run_id] = _run_lock_users.get(run_id, 0) + 1
+    try:
+        async with lock:
+            yield
+    finally:
+        remaining = _run_lock_users[run_id] - 1
+        if remaining:
+            _run_lock_users[run_id] = remaining
+        else:
+            _run_lock_users.pop(run_id, None)
+            if _run_locks.get(run_id) is lock:
+                _run_locks.pop(run_id, None)
 
 
 def _now() -> datetime:
@@ -85,9 +109,7 @@ async def _record_terminal(
         operation.progress_at = completed_at
         operation.result = handle.result
         operation.error = (
-            {"type": type(error).__name__, "message": str(error)[:4_000]}
-            if error is not None
-            else None
+            {"type": type(error).__name__, "message": str(error)[:4_000]} if error is not None else None
         )
         session.add(
             AuditEvent(
@@ -116,9 +138,7 @@ async def _record_cancelled_terminal(
     handle: OperationHandle,
     error: asyncio.CancelledError,
 ) -> None:
-    terminal_task = asyncio.create_task(
-        _record_terminal(handle, status="cancelled", error=error)
-    )
+    terminal_task = asyncio.create_task(_record_terminal(handle, status="cancelled", error=error))
     try:
         await asyncio.shield(terminal_task)
     except asyncio.CancelledError:
@@ -239,6 +259,31 @@ def _unregister_active_task(run_id: str, task: asyncio.Task[Any]) -> None:
         tasks.pop(task, None)
     if not tasks:
         _active_tasks.pop(run_id, None)
+
+
+def _finish_background_task(run_id: str, task: asyncio.Task[None]) -> None:
+    _unregister_active_task(run_id, task)
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        return
+    except Exception:
+        logger.exception("Background work for run %s failed after recording its failure", run_id)
+
+
+def launch_background_work(
+    run_id: str,
+    worker: Callable[[], Awaitable[None]],
+) -> None:
+    if has_active_work(run_id):
+        raise ActiveWorkError(f"Run {run_id} already has active work")
+
+    async def run_worker() -> None:
+        await worker()
+
+    task = asyncio.create_task(run_worker(), name=f"run-{run_id}")
+    _register_active_task(run_id, task)
+    task.add_done_callback(lambda completed: _finish_background_task(run_id, completed))
 
 
 @asynccontextmanager

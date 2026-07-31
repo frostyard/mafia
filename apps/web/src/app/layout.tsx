@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
-import { CopilotProvider } from "@/components/copilot-provider";
 import { Header } from "@/components/header";
 import { githubAuthEnabled, userFromHeaders } from "@/lib/auth";
 import "./design-system.css";
@@ -21,12 +20,10 @@ export default async function RootLayout({
   return (
     <html lang="en">
       <body>
-        <CopilotProvider>
-          <div className="ph-shell">
-            <Header user={user} />
-            <main className="ph-main">{children}</main>
-          </div>
-        </CopilotProvider>
+        <div className="ph-shell">
+          <Header user={user} />
+          <main className="ph-main">{children}</main>
+        </div>
       </body>
     </html>
   );

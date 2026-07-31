@@ -4,7 +4,7 @@ from mafia.domain.artifacts import (
     PullRequestReview,
 )
 from mafia.domain.enums import WorkflowType
-from mafia.domain.schemas import RunCreate
+from mafia.domain.schemas import DecisionSubmission, RunCreate
 from pydantic import ValidationError
 
 
@@ -16,6 +16,16 @@ def test_requires_exactly_one_requirement_source() -> None:
             issue_number=1,
             requirement_text="also text",
         )
+
+
+def test_refine_requires_non_blank_feedback() -> None:
+    with pytest.raises(ValidationError):
+        DecisionSubmission(action="refine", feedback="  ")
+
+
+def test_non_refine_rejects_feedback() -> None:
+    with pytest.raises(ValidationError):
+        DecisionSubmission(action="accept", feedback="No changes")
 
 
 def test_pull_request_review_requires_only_pull_request_number() -> None:

@@ -4,9 +4,9 @@ import { ArtifactTabs } from "@/components/artifact-tabs";
 import { EvidenceDrawer } from "@/components/evidence-drawer";
 import { PhaseBoard } from "@/components/phase-board";
 import { RefreshPrStatus } from "@/components/refresh-pr-status";
-import { RunAgentShell } from "@/components/run-agent-shell";
 import { StateBadge } from "@/components/run-cards";
 import { StageTimeline } from "@/components/stage-timeline";
+import { VisibilityRail } from "@/components/visibility-rail";
 import { WorkflowPanel } from "@/components/workflow-panel";
 import { getEvidence, getRun, getRunActivity } from "@/lib/api";
 import type { ApiError, Evidence, RunActivity, RunDetail } from "@/lib/types";
@@ -60,12 +60,8 @@ function RunDetailView({
         </div>
       </header>
 
-      <RunAgentShell
-        initialActivity={activity}
-        runId={run.id}
-        threadId={run.thread_id}
-        workflowType={run.workflow_type}
-      >
+      <div className="run-workspace-layout">
+        <main className="run-workspace-main">
         <section className="ph-stats run-stats" aria-label="Run summary">
           {isPullRequestReview ? (
             <>
@@ -166,14 +162,14 @@ function RunDetailView({
         />
         <EvidenceDrawer evidence={evidence} error={evidenceError} />
         {!isPullRequestReview ? <PhaseBoard phases={run.phases} /> : null}
-        <WorkflowPanel
-          activeSpecRevision={run.active_spec_revision}
+        <WorkflowPanel run={run} />
+        </main>
+        <VisibilityRail
+          initialActivity={activity}
           runId={run.id}
-          runState={run.state}
-          threadId={run.thread_id}
           workflowType={run.workflow_type}
         />
-      </RunAgentShell>
+      </div>
     </>
   );
 }

@@ -2,16 +2,14 @@ import asyncio
 import os
 import re
 from pathlib import Path
-from typing import Any
 
-from agent_framework import WorkflowContext, WorkflowEvent
 from mafia.agents.copilot import CopilotAgentService
 from mafia.agents.prompts import IMPLEMENTATION_INSTRUCTIONS
 from mafia.config import get_settings
-from mafia.db.models import Decision, Phase, Run
+from mafia.db.models import Phase, Run
 from mafia.db.session import SessionFactory
 from mafia.domain.artifacts import PhaseExecutionReport
-from mafia.domain.enums import ArtifactKind, DecisionType, PhaseState, RunState
+from mafia.domain.enums import ArtifactKind, PhaseState, RunState
 from mafia.services.artifacts import persist_artifact
 from mafia.services.commands import run_command
 from mafia.services.devcontainers import (
@@ -153,16 +151,14 @@ async def _cleanup_phase_resources(
 async def execute_phase(
     run_id: str,
     phase_id: str,
-    ctx: WorkflowContext[Any, str],
 ) -> None:
     async with active_run_work(run_id):
-        await _execute_phase(run_id, phase_id, ctx)
+        await _execute_phase(run_id, phase_id)
 
 
 async def _execute_phase(
     run_id: str,
     phase_id: str,
-    ctx: WorkflowContext[Any, str],
 ) -> None:
     run, phase = await _phase_with_run(run_id, phase_id)
     if run.state != RunState.READY_FOR_PHASE or phase.status != PhaseState.READY:
@@ -193,9 +189,9 @@ async def _execute_phase(
                 event_type="source.drift_detected",
                 payload={"expected": phase.source_sha, "actual": current_sha},
             )
-        await ctx.yield_output(
-            "The default branch changed after plan acceptance. The remaining plan must be re-grounded."
-        )
+        from mafia.services.run_control import advance_run
+
+        await advance_run(run_id)
         return
 
     lease_token = await acquire_repository_lock(
@@ -238,13 +234,6 @@ async def _execute_phase(
             current_phase.status = PhaseState.EXECUTING
             current_phase.branch_name = branch
             current_phase.worktree_path = str(worktree)
-            session.add(
-                Decision(
-                    run_id=run_id,
-                    phase_id=phase.id,
-                    decision_type=DecisionType.START_PHASE,
-                )
-            )
             await session.commit()
         settings = get_settings()
         project_configuration = resolve_project_configuration(identity, worktree)
@@ -653,21 +642,6 @@ async def _execute_phase(
                 event_type="pull_request.waiting_for_merge",
                 payload={"phase_id": phase.id, "number": current_phase.pr_number},
             )
-        await ctx.add_event(
-            WorkflowEvent(
-                type="data",
-                data={
-                    "event_type": "phase_result",
-                    "phase_id": phase.id,
-                    "summary": report.summary,
-                    "commit": commit,
-                    "pr_url": resolved_pr_url,
-                },
-            )
-        )
-        await ctx.yield_output(
-            f"Phase {phase.ordinal} is complete and pull request {resolved_pr_url} is waiting for merge."
-        )
     except Exception as error:
         await _record_phase_failure(run_id, phase.id, error)
         raise

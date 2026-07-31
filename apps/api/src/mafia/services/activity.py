@@ -1,16 +1,15 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Literal
-from uuid import uuid4
 
 from mafia.config import get_settings
 from mafia.db.models import (
-    AGUISnapshot,
     Artifact,
     AuditEvent,
     Decision,
     Evidence,
     Operation,
+    PendingAction,
     Phase,
     RepositoryLock,
     Run,
@@ -21,10 +20,11 @@ from mafia.domain.enums import (
     ArtifactKind,
     DecisionType,
     OperationStatus,
+    PendingActionKind,
     PhaseState,
     RunState,
 )
-from mafia.domain.schemas import ActivityEventRead, OperationRead, RunActivity
+from mafia.domain.schemas import ActivityEventRead, OperationRead, PendingActionRead, RunActivity
 from mafia.domain.state_machine import require_transition
 from mafia.services.operations import cancel_active_work, has_active_work
 from mafia.services.repositories import RepositoryIdentity, require_repository_owner
@@ -74,7 +74,7 @@ def _utc(value: datetime) -> datetime:
 
 
 def _status(
-    state: RunState,
+    run: Run,
 ) -> tuple[
     Literal["idle", "working", "decision", "external", "failed", "cancelled", "completed"],
     str,
@@ -115,21 +115,32 @@ def _status(
         RunState.CANCELLED: "The workflow was cancelled.",
         RunState.COMPLETED: "The workflow completed.",
     }
-    if state in WORKING_STATES:
+    pending_action = run.pending_action
+    if pending_action is not None:
+        message_key = (
+            "message"
+            if pending_action.kind == PendingActionKind.CONFIGURATION_REQUIRED
+            else "prompt"
+        )
+        message = pending_action.payload.get(message_key)
+        if isinstance(message, str):
+            return "decision", message
+        return "decision", messages[run.state]
+    if run.state in WORKING_STATES:
         mode = "working"
-    elif state in DECISION_STATES:
+    elif run.state in DECISION_STATES:
         mode = "decision"
-    elif state == RunState.WAITING_FOR_MERGE:
+    elif run.state == RunState.WAITING_FOR_MERGE:
         mode = "external"
-    elif state == RunState.FAILED:
+    elif run.state == RunState.FAILED:
         mode = "failed"
-    elif state == RunState.CANCELLED:
+    elif run.state == RunState.CANCELLED:
         mode = "cancelled"
-    elif state == RunState.COMPLETED:
+    elif run.state == RunState.COMPLETED:
         mode = "completed"
     else:
         mode = "idle"
-    return mode, messages[state]
+    return mode, messages[run.state]
 
 
 async def get_run_activity(run_id: str) -> RunActivity:
@@ -189,7 +200,7 @@ async def get_run_activity(run_id: str) -> RunActivity:
             else None
         )
     )
-    mode, message = _status(run.state)
+    mode, message = _status(run)
     operation_reads = [
         OperationRead(
             id=operation.id,
@@ -239,6 +250,11 @@ async def get_run_activity(run_id: str) -> RunActivity:
             len(snapshot.manifest.get("files", [])) if snapshot is not None else None
         ),
         citations_found=citations_found,
+        pending_action=(
+            PendingActionRead.model_validate(run.pending_action)
+            if run.pending_action is not None
+            else None
+        ),
         operations=operation_reads,
         events=[ActivityEventRead.model_validate(event) for event in events],
     )
@@ -272,7 +288,7 @@ async def _close_running_operations(run_id: str, reason: str) -> None:
         await session.commit()
 
 
-async def _stop_active_work(run_id: str, reason: str) -> None:
+async def stop_active_work(run_id: str, reason: str) -> None:
     cancel_active_work(run_id)
     await _wait_for_active_work(run_id)
     await _close_running_operations(run_id, reason)
@@ -286,7 +302,7 @@ async def cancel_run(run_id: str) -> RunActivity:
         )
         if run.state not in WORKING_STATES:
             raise RunControlError("Only active work can be cancelled from the activity rail")
-    await _stop_active_work(run_id, "The user cancelled active work.")
+    await stop_active_work(run_id, "The user cancelled active work.")
     async with SessionFactory() as session:
         run = await get_run(session, run_id)
         if run.state in WORKING_STATES:
@@ -297,50 +313,6 @@ async def cancel_run(run_id: str) -> RunActivity:
                 expected_version=run.version,
                 event_type="run.cancel_requested",
             )
-    return await get_run_activity(run_id)
-
-
-async def prepare_retry(run_id: str) -> RunActivity:
-    async with SessionFactory() as session:
-        retry_run = await get_run(session, run_id)
-        require_repository_owner(
-            RepositoryIdentity(
-                retry_run.repository.owner,
-                retry_run.repository.name,
-            )
-        )
-    activity = await get_run_activity(run_id)
-    if activity.state != RunState.FAILED and not activity.stalled:
-        raise RunControlError("Only failed or stalled work can be retried")
-    if activity.stalled:
-        await _stop_active_work(
-            run_id,
-            "The stalled operation was replaced by a retry.",
-        )
-        async with SessionFactory() as session:
-            run = await get_run(session, run_id)
-            if run.state not in WORKING_STATES:
-                return await get_run_activity(run_id)
-            await transition_run(
-                session,
-                run.id,
-                RunState.FAILED,
-                expected_version=run.version,
-                event_type="run.retry_requested",
-                payload={"reason": "stalled"},
-            )
-    elif has_active_work(run_id):
-        raise RunControlError("The previous workflow attempt is still stopping")
-    async with SessionFactory() as session:
-        run = await get_run(session, run_id)
-        session.add(
-            AuditEvent(
-                run_id=run.id,
-                event_type="run.retry_ready",
-                payload={"version": run.version},
-            )
-        )
-        await session.commit()
     return await get_run_activity(run_id)
 
 
@@ -360,7 +332,7 @@ async def reset_to_specification(run_id: str) -> Run:
         stop_required = was_working or has_active_work(run_id)
 
     if stop_required:
-        await _stop_active_work(
+        await stop_active_work(
             run_id,
             "Active work was cancelled to return to specification refinement.",
         )
@@ -392,15 +364,12 @@ async def reset_to_specification(run_id: str) -> Run:
             raise RunControlError("The active specification artifact is missing")
         require_transition(run.state, RunState.AWAITING_SPEC_DECISION)
         previous_state = run.state
-        previous_thread_id = run.thread_id
-        next_thread_id = str(uuid4())
         updated_id = await session.scalar(
             update(Run)
             .where(Run.id == run.id, Run.version == run.version)
             .values(
                 state=RunState.AWAITING_SPEC_DECISION,
                 version=run.version + 1,
-                thread_id=next_thread_id,
                 active_plan_revision=None,
                 failure_code=None,
                 failure_message=None,
@@ -435,6 +404,17 @@ async def reset_to_specification(run_id: str) -> Run:
                 decision_type=DecisionType.RESET_SPECIFICATION,
             )
         )
+        await session.execute(delete(PendingAction).where(PendingAction.run_id == run.id))
+        session.add(
+            PendingAction(
+                run_id=run.id,
+                kind=PendingActionKind.SPECIFICATION,
+                artifact_id=specification.id,
+                revision=specification.revision,
+                expected_run_version=run.version + 1,
+                payload={"prompt": "Accept this specification or refine it with feedback."},
+            )
+        )
         session.add(
             AuditEvent(
                 run_id=run.id,
@@ -445,13 +425,8 @@ async def reset_to_specification(run_id: str) -> Run:
                     "specification_revision": run.active_spec_revision,
                     "invalidated_phase_ordinals": sorted(invalidated_ordinals),
                     "preserved_phase_ordinals": sorted(preserved_ordinals),
-                    "previous_thread_id": previous_thread_id,
-                    "thread_id": next_thread_id,
                 },
             )
-        )
-        await session.execute(
-            delete(AGUISnapshot).where(AGUISnapshot.thread_id == previous_thread_id)
         )
         await session.execute(
             delete(RepositoryLock).where(RepositoryLock.run_id == run.id)

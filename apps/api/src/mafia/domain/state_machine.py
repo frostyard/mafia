@@ -20,18 +20,10 @@ ALLOWED_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
     RunState.AWAITING_SPEC_DECISION: frozenset(
         {RunState.GENERATING_SPEC, RunState.GROUNDING_PLAN, RunState.CANCELLED, RunState.FAILED}
     ),
-    RunState.GROUNDING_PLAN: frozenset(
-        {RunState.GENERATING_PLAN, RunState.CANCELLED, RunState.FAILED}
-    ),
-    RunState.GENERATING_PLAN: frozenset(
-        {RunState.REVIEWING_PLAN, RunState.CANCELLED, RunState.FAILED}
-    ),
-    RunState.REVIEWING_PLAN: frozenset(
-        {RunState.ADJUDICATING_PLAN, RunState.CANCELLED, RunState.FAILED}
-    ),
-    RunState.ADJUDICATING_PLAN: frozenset(
-        {RunState.PERSISTING_PLAN, RunState.CANCELLED, RunState.FAILED}
-    ),
+    RunState.GROUNDING_PLAN: frozenset({RunState.GENERATING_PLAN, RunState.CANCELLED, RunState.FAILED}),
+    RunState.GENERATING_PLAN: frozenset({RunState.REVIEWING_PLAN, RunState.CANCELLED, RunState.FAILED}),
+    RunState.REVIEWING_PLAN: frozenset({RunState.ADJUDICATING_PLAN, RunState.CANCELLED, RunState.FAILED}),
+    RunState.ADJUDICATING_PLAN: frozenset({RunState.PERSISTING_PLAN, RunState.CANCELLED, RunState.FAILED}),
     RunState.PERSISTING_PLAN: frozenset(
         {RunState.AWAITING_PLAN_DECISION, RunState.CANCELLED, RunState.FAILED}
     ),
@@ -90,9 +82,7 @@ ALLOWED_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
     RunState.VERIFYING_REMEDIATION: frozenset(
         {RunState.EXECUTING_PHASE, RunState.CANCELLED, RunState.FAILED}
     ),
-    RunState.PR_OPEN: frozenset(
-        {RunState.WAITING_FOR_MERGE, RunState.CANCELLED, RunState.FAILED}
-    ),
+    RunState.PR_OPEN: frozenset({RunState.WAITING_FOR_MERGE, RunState.CANCELLED, RunState.FAILED}),
     RunState.WAITING_FOR_MERGE: frozenset(
         {
             RunState.AWAITING_SPEC_DECISION,
@@ -111,12 +101,8 @@ ALLOWED_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
             RunState.FAILED,
         }
     ),
-    RunState.GROUNDING_PR_REVIEW: frozenset(
-        {RunState.REVIEWING_PR, RunState.CANCELLED, RunState.FAILED}
-    ),
-    RunState.REVIEWING_PR: frozenset(
-        {RunState.CONSOLIDATING_PR_REVIEW, RunState.CANCELLED, RunState.FAILED}
-    ),
+    RunState.GROUNDING_PR_REVIEW: frozenset({RunState.REVIEWING_PR, RunState.CANCELLED, RunState.FAILED}),
+    RunState.REVIEWING_PR: frozenset({RunState.CONSOLIDATING_PR_REVIEW, RunState.CANCELLED, RunState.FAILED}),
     RunState.CONSOLIDATING_PR_REVIEW: frozenset(
         {RunState.AWAITING_PR_REVIEW_DECISION, RunState.CANCELLED, RunState.FAILED}
     ),
@@ -128,12 +114,11 @@ ALLOWED_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
             RunState.FAILED,
         }
     ),
-    RunState.POSTING_PR_REVIEW: frozenset(
-        {RunState.COMPLETED, RunState.CANCELLED, RunState.FAILED}
-    ),
+    RunState.POSTING_PR_REVIEW: frozenset({RunState.COMPLETED, RunState.CANCELLED, RunState.FAILED}),
     RunState.FAILED: frozenset(
         {
             RunState.AWAITING_SPEC_DECISION,
+            RunState.AWAITING_PLAN_DECISION,
             RunState.AWAITING_PR_REVIEW_DECISION,
             RunState.GROUNDING_PR_REVIEW,
             RunState.GENERATING_SPEC,

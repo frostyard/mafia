@@ -274,6 +274,10 @@ async def devcontainer_fixture(
     engine_name = request.param
     assert engine_name in {"docker", "podman"}
     try:
+        devcontainers.resolve_devcontainer_cli()
+    except devcontainers.DevContainerError as error:
+        pytest.skip(str(error))
+    try:
         engine = await select_container_engine(engine_name)
     except devcontainers.DevContainerError as error:
         pytest.skip(str(error))

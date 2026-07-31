@@ -11,7 +11,7 @@ mafia reads `.env` through the `MAFIA_` prefix. Start from `.env.example`.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `MAFIA_DATA_DIR` | `./data` | Database, checkpoints, repository caches, and worktrees |
+| `MAFIA_DATA_DIR` | `./data` | SQLite database, pending actions, repository caches, and worktrees |
 | `MAFIA_API_HOST` | `127.0.0.1` | FastAPI bind address |
 | `MAFIA_API_PORT` | `8000` | FastAPI port |
 | `MAFIA_WEB_HOST` | `127.0.0.1` | Next.js bind address in the release bundle |
