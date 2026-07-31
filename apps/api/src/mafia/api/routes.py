@@ -23,6 +23,7 @@ from mafia.domain.schemas import (
 from mafia.services.activity import RunControlError as ActivityRunControlError
 from mafia.services.activity import cancel_run, get_run_activity, reset_to_specification
 from mafia.services.lifecycle import reconcile_run
+from mafia.services.operations import ActiveWorkError
 from mafia.services.operator import bind_request_operator
 from mafia.services.prerequisites import readiness
 from mafia.services.project_config import (
@@ -265,7 +266,7 @@ async def runs_start(run_id: str, _: Operator) -> RunActivity:
             status_code=404,
             detail={"code": "run_not_found", "message": run_id},
         ) from error
-    except (ConcurrentUpdateError, RunControlError) as error:
+    except (ActiveWorkError, ConcurrentUpdateError, RunControlError) as error:
         raise HTTPException(
             status_code=409,
             detail={"code": "run_control_conflict", "message": str(error)},

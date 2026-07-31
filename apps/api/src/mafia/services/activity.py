@@ -316,50 +316,6 @@ async def cancel_run(run_id: str) -> RunActivity:
     return await get_run_activity(run_id)
 
 
-async def prepare_retry(run_id: str) -> RunActivity:
-    async with SessionFactory() as session:
-        retry_run = await get_run(session, run_id)
-        require_repository_owner(
-            RepositoryIdentity(
-                retry_run.repository.owner,
-                retry_run.repository.name,
-            )
-        )
-    activity = await get_run_activity(run_id)
-    if activity.state != RunState.FAILED and not activity.stalled:
-        raise RunControlError("Only failed or stalled work can be retried")
-    if activity.stalled:
-        await _stop_active_work(
-            run_id,
-            "The stalled operation was replaced by a retry.",
-        )
-        async with SessionFactory() as session:
-            run = await get_run(session, run_id)
-            if run.state not in WORKING_STATES:
-                return await get_run_activity(run_id)
-            await transition_run(
-                session,
-                run.id,
-                RunState.FAILED,
-                expected_version=run.version,
-                event_type="run.retry_requested",
-                payload={"reason": "stalled"},
-            )
-    elif has_active_work(run_id):
-        raise RunControlError("The previous workflow attempt is still stopping")
-    async with SessionFactory() as session:
-        run = await get_run(session, run_id)
-        session.add(
-            AuditEvent(
-                run_id=run.id,
-                event_type="run.retry_ready",
-                payload={"version": run.version},
-            )
-        )
-        await session.commit()
-    return await get_run_activity(run_id)
-
-
 async def reset_to_specification(run_id: str) -> Run:
     async with SessionFactory() as session:
         run = await get_run(session, run_id)

@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncGenerator
 
 import httpx
@@ -10,7 +11,9 @@ from mafia.db.models import PendingAction, Repository, Run
 from mafia.domain.enums import PendingActionKind, RequirementType, RunState
 from mafia.domain.schemas import RunActivity
 from mafia.services import activity as activity_service
+from mafia.services import run_control
 from mafia.services.auth_middleware import AuthenticationMiddleware
+from mafia.services.operations import has_active_work
 from mafia.services.run_control import RunControlError
 from mafia.services.runs import ConcurrentUpdateError, RunNotFoundError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -245,3 +248,63 @@ async def test_activity_uses_persisted_configuration_action_for_decision_status(
     assert result.status_message == "Configure validation before starting this phase."
     assert result.pending_action is not None
     assert result.pending_action.kind == PendingActionKind.CONFIGURATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_concurrent_start_returns_conflict_without_launching_a_second_worker(
+    client: httpx.AsyncClient,
+    operator_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    worker_started = asyncio.Event()
+    release_worker = asyncio.Event()
+
+    async def advance(run_id: str) -> None:
+        assert run_id == "run-1"
+        worker_started.set()
+        await release_worker.wait()
+
+    try:
+        async with session_factory() as session:
+            repository = Repository(
+                owner="octo",
+                name="repo",
+                remote_url="https://github.com/octo/repo.git",
+            )
+            session.add(repository)
+            await session.flush()
+            session.add(
+                Run(
+                    id="run-1",
+                    repository_id=repository.id,
+                    requirement_type=RequirementType.TEXT,
+                    requirement_text="Start once",
+                    primary_model="gpt-5.6-sol",
+                    reviewer_model="claude-opus-4.8",
+                )
+            )
+            await session.commit()
+
+        monkeypatch.setattr(run_control, "SessionFactory", session_factory)
+        monkeypatch.setattr(activity_service, "SessionFactory", session_factory)
+        monkeypatch.setattr(run_control, "advance_run", advance)
+
+        winner = await client.post("/api/runs/run-1/start", headers=operator_headers)
+        await worker_started.wait()
+        loser = await client.post("/api/runs/run-1/start", headers=operator_headers)
+
+        assert winner.status_code == 200
+        assert loser.status_code == 409
+        assert loser.json()["detail"]["code"] == "run_control_conflict"
+        assert has_active_work("run-1") is True
+    finally:
+        release_worker.set()
+        for _ in range(10):
+            if not has_active_work("run-1"):
+                break
+            await asyncio.sleep(0)
+        await engine.dispose()
