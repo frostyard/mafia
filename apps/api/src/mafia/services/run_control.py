@@ -196,9 +196,6 @@ async def _advance_failed(
                 payload={"phase_id": phase.id, "review_cycle": phase.review_cycle},
                 pending=pending,
             )
-        from mafia.services.execution import execute_phase
-
-        await execute_phase(run_id, failed_phase.id)
         return
     if run.workflow_type == WorkflowType.PULL_REQUEST_REVIEW:
         if await _restore_pull_request_review_action(run_id):

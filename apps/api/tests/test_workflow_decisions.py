@@ -1202,8 +1202,18 @@ async def test_pull_request_review_post_failure_is_retryable(
 
 
 @pytest.mark.asyncio
-async def test_failed_phase_without_recoverable_pr_executes_phase(
-    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("validation_available", "action_kind"),
+    [
+        (True, PendingActionKind.PHASE),
+        (False, PendingActionKind.CONFIGURATION_REQUIRED),
+    ],
+)
+async def test_failed_phase_without_recoverable_pr_waits_for_operator_action(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    validation_available: bool,
+    action_kind: PendingActionKind,
 ) -> None:
     async with session_factory() as session:
         run = await add_run(session, state=RunState.FAILED)
@@ -1223,11 +1233,17 @@ async def test_failed_phase_without_recoverable_pr_executes_phase(
         phase_id = phase.id
     from mafia.services import lifecycle
 
-    monkeypatch.setattr(lifecycle, "recover_phase_pull_request", AsyncMock(return_value=False))
-    execution = AsyncMock()
-    monkeypatch.setitem(
-        __import__("sys").modules, "mafia.services.execution", type("M", (), {"execute_phase": execution})
+    recovery = AsyncMock(return_value=False)
+    monkeypatch.setattr(lifecycle, "recover_phase_pull_request", recovery)
+    monkeypatch.setattr(
+        run_control,
+        "source_validation_status",
+        AsyncMock(return_value=(validation_available, "test")),
     )
+    from mafia.services import execution as execution_service
+
+    execute_phase = AsyncMock()
+    monkeypatch.setattr(execution_service, "execute_phase", execute_phase)
     await run_control.advance_run(run.id)
 
     async with session_factory() as session:
@@ -1235,7 +1251,12 @@ async def test_failed_phase_without_recoverable_pr_executes_phase(
         phase = await session.get(Phase, phase_id)
     assert phase is not None and phase.status == PhaseState.READY
     assert retried.state == RunState.READY_FOR_PHASE
-    execution.assert_awaited_once_with(run.id, phase_id)
+    actions = list(await session.scalars(select(PendingAction).where(PendingAction.run_id == run.id)))
+    recovery.assert_awaited_once_with(run.id, phase_id)
+    assert len(actions) == 1
+    assert actions[0].phase_id == phase_id
+    assert actions[0].kind == action_kind
+    execute_phase.assert_not_awaited()
 
 
 @pytest.mark.asyncio
