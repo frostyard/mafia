@@ -1182,3 +1182,147 @@ async def test_pull_request_review_post_failure_is_retryable(
     async with session_factory() as session:
         restored = await get_run(session, run.id)
     assert restored.pending_action is not None
+
+
+@pytest.mark.asyncio
+async def test_failed_phase_without_recoverable_pr_executes_phase(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.FAILED)
+        phase = Phase(
+            run_id=run.id,
+            ordinal=1,
+            title="Retry",
+            objective="Retry phase",
+            dependencies=[],
+            details={},
+            status=PhaseState.FAILED,
+            plan_revision=1,
+            source_sha="a" * 40,
+        )
+        session.add(phase)
+        await session.commit()
+        phase_id = phase.id
+    from mafia.services import lifecycle
+
+    monkeypatch.setattr(lifecycle, "recover_phase_pull_request", AsyncMock(return_value=False))
+    execution = AsyncMock()
+    monkeypatch.setitem(
+        __import__("sys").modules, "mafia.services.execution", type("M", (), {"execute_phase": execution})
+    )
+    await run_control.advance_run(run.id)
+
+    async with session_factory() as session:
+        retried = await get_run(session, run.id)
+        phase = await session.get(Phase, phase_id)
+    assert phase is not None and phase.status == PhaseState.READY
+    assert retried.state == RunState.READY_FOR_PHASE
+    execution.assert_awaited_once_with(run.id, phase_id)
+
+
+@pytest.mark.asyncio
+async def test_pull_request_review_cancel_consumes_action_without_launch(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.AWAITING_PR_REVIEW_DECISION)
+        run.workflow_type = WorkflowType.PULL_REQUEST_REVIEW
+        run.requirement_type = None
+        run.requirement_text = None
+        run.pull_request_number = 42
+        run.active_review_revision = 1
+        artifact = Artifact(
+            run_id=run.id,
+            kind=ArtifactKind.PULL_REQUEST_REVIEW_CONSOLIDATED,
+            revision=1,
+            structured_data={},
+            rendered_markdown="# Review",
+            model=run.primary_model,
+        )
+        session.add(artifact)
+        await session.flush()
+        run.pending_action = PendingAction(
+            kind=PendingActionKind.PULL_REQUEST_REVIEW,
+            artifact_id=artifact.id,
+            revision=1,
+            expected_run_version=run.version,
+            payload={"pull_request_number": 42},
+        )
+        await session.commit()
+        action_id = pending_action_id(run)
+    monkeypatch.setattr(run_control, "launch_background_work", fail_launch)
+    await run_control.submit_decision(run.id, action_id, DecisionSubmission(action="cancel"))
+    async with session_factory() as session:
+        cancelled = await get_run(session, run.id)
+        decision = await session.scalar(select(Decision).where(Decision.run_id == run.id))
+    assert cancelled.state == RunState.CANCELLED
+    assert cancelled.pending_action is None
+    assert decision is not None and decision.decision_type == DecisionType.CANCEL
+
+
+@pytest.mark.asyncio
+async def test_stale_pull_request_review_revision_has_no_side_effects(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.AWAITING_PR_REVIEW_DECISION)
+        run.workflow_type = WorkflowType.PULL_REQUEST_REVIEW
+        run.requirement_type = None
+        run.requirement_text = None
+        run.pull_request_number = 42
+        run.active_review_revision = 2
+        artifact = Artifact(
+            run_id=run.id,
+            kind=ArtifactKind.PULL_REQUEST_REVIEW_CONSOLIDATED,
+            revision=1,
+            structured_data={},
+            rendered_markdown="# Review",
+            model=run.primary_model,
+        )
+        session.add(artifact)
+        await session.flush()
+        run.pending_action = PendingAction(
+            kind=PendingActionKind.PULL_REQUEST_REVIEW,
+            artifact_id=artifact.id,
+            revision=1,
+            expected_run_version=run.version,
+            payload={"pull_request_number": 99},
+        )
+        await session.commit()
+        action_id = pending_action_id(run)
+    monkeypatch.setattr(run_control, "launch_background_work", fail_launch)
+    with pytest.raises(run_control.RunControlError, match="stale"):
+        await run_control.submit_decision(run.id, action_id, DecisionSubmission(action="finish"))
+    async with session_factory() as session:
+        unchanged = await get_run(session, run.id)
+        decisions = list(await session.scalars(select(Decision).where(Decision.run_id == run.id)))
+    assert unchanged.state == RunState.AWAITING_PR_REVIEW_DECISION
+    assert unchanged.pending_action is not None
+    assert decisions == []
+
+
+@pytest.mark.asyncio
+async def test_failed_run_with_accepted_specification_resumes_planning(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.FAILED)
+        snapshot = await add_snapshot(session, run, "spec-r1")
+        artifact = Artifact(
+            run_id=run.id,
+            source_snapshot_id=snapshot.id,
+            kind=ArtifactKind.SPECIFICATION,
+            revision=1,
+            structured_data=specification().model_dump(mode="json"),
+            rendered_markdown="# Spec",
+            model=run.primary_model,
+        )
+        session.add(artifact)
+        await session.flush()
+        session.add(Decision(run_id=run.id, artifact_id=artifact.id, decision_type=DecisionType.ACCEPT))
+        await session.commit()
+    planning = AsyncMock()
+    monkeypatch.setattr(run_control, "_generate_plan", planning)
+    await run_control.advance_run(run.id)
+    planning.assert_awaited_once_with(run.id, feedback="Retry after an interrupted planning step.")
