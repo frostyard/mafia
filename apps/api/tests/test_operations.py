@@ -72,6 +72,99 @@ async def test_active_run_guard_covers_operation_gaps() -> None:
 
 
 @pytest.mark.asyncio
+async def test_run_work_lock_keeps_queued_callers_on_one_lock_until_all_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DelayedHandoffLock:
+        def __init__(self) -> None:
+            self._locked = False
+            self._waiters: list[asyncio.Future[None]] = []
+            self.waiter_queued = asyncio.Event()
+            self.third_queued = asyncio.Event()
+
+        def locked(self) -> bool:
+            return self._locked
+
+        async def acquire(self) -> bool:
+            if not self._locked and not self._waiters:
+                self._locked = True
+                return True
+            waiter = asyncio.get_running_loop().create_future()
+            self._waiters.append(waiter)
+            if len(self._waiters) == 1:
+                self.waiter_queued.set()
+            else:
+                self.third_queued.set()
+            await waiter
+            return True
+
+        def release(self) -> None:
+            self._locked = False
+
+        def grant_next(self) -> None:
+            self._locked = True
+            self._waiters.pop(0).set_result(None)
+
+        async def __aenter__(self) -> None:
+            await self.acquire()
+
+        async def __aexit__(self, *args: object) -> None:
+            self.release()
+
+    locks: list[DelayedHandoffLock] = []
+
+    def new_lock() -> DelayedHandoffLock:
+        lock = DelayedHandoffLock()
+        locks.append(lock)
+        return lock
+
+    monkeypatch.setattr(operations.asyncio, "Lock", new_lock)
+    operations._run_locks.clear()  # pyright: ignore[reportPrivateUsage]
+    operations._run_lock_users.clear()  # pyright: ignore[reportPrivateUsage]
+    holder_entered = asyncio.Event()
+    release_holder = asyncio.Event()
+    waiter_entered = asyncio.Event()
+    release_waiter = asyncio.Event()
+    contender_entered = asyncio.Event()
+    release_contender = asyncio.Event()
+    active: set[str] = set()
+
+    async def hold(name: str, entered: asyncio.Event, release: asyncio.Event) -> None:
+        async with operations.run_work_lock("run-lock-race"):
+            active.add(name)
+            assert len(active) == 1
+            entered.set()
+            await release.wait()
+            active.remove(name)
+
+    holder = asyncio.create_task(hold("holder", holder_entered, release_holder))
+    await holder_entered.wait()
+    waiter = asyncio.create_task(hold("waiter", waiter_entered, release_waiter))
+    lock = locks[0]
+    await lock.waiter_queued.wait()
+
+    release_holder.set()
+    await holder
+    assert operations._run_locks["run-lock-race"] is lock  # pyright: ignore[reportPrivateUsage]
+
+    contender = asyncio.create_task(hold("contender", contender_entered, release_contender))
+    await lock.third_queued.wait()
+    lock.grant_next()
+    await waiter_entered.wait()
+    assert active == {"waiter"}
+    release_waiter.set()
+    await waiter
+    assert operations._run_locks["run-lock-race"] is lock  # pyright: ignore[reportPrivateUsage]
+
+    lock.grant_next()
+    await contender_entered.wait()
+    assert active == {"contender"}
+    release_contender.set()
+    await contender
+    assert "run-lock-race" not in operations._run_locks  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.asyncio
 async def test_tracked_operation_persists_completion(
     operation_session_factory: OperationSessionFixture,
 ) -> None:

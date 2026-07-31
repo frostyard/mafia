@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 OperationDetailProvider = Callable[[], dict[str, Any]]
 _active_tasks: dict[str, dict[asyncio.Task[Any], int]] = {}
 _run_locks: dict[str, asyncio.Lock] = {}
+_run_lock_users: dict[str, int] = {}
 
 
 class ActiveWorkError(RuntimeError):
@@ -29,10 +30,18 @@ class ActiveWorkError(RuntimeError):
 async def run_work_lock(run_id: str) -> AsyncGenerator[None]:
     """Serialize local state changes that hand work to a background task."""
     lock = _run_locks.setdefault(run_id, asyncio.Lock())
-    async with lock:
-        yield
-    if not lock.locked():
-        _run_locks.pop(run_id, None)
+    _run_lock_users[run_id] = _run_lock_users.get(run_id, 0) + 1
+    try:
+        async with lock:
+            yield
+    finally:
+        remaining = _run_lock_users[run_id] - 1
+        if remaining:
+            _run_lock_users[run_id] = remaining
+        else:
+            _run_lock_users.pop(run_id, None)
+            if _run_locks.get(run_id) is lock:
+                _run_locks.pop(run_id, None)
 
 
 def _now() -> datetime:
