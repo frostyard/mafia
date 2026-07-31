@@ -60,15 +60,13 @@ login, avatar URL, and expiration.
 ## Caddy
 
 Keep both application listeners bound to loopback and expose only Caddy.
-`contrib/Caddyfile` terminates TLS, performs `forward_auth`, sends CopilotKit
-runtime requests and pages to Next.js, and sends authenticated REST, AG-UI, and
-readiness traffic to FastAPI:
+`contrib/Caddyfile` terminates TLS, performs `forward_auth`, sends authenticated
+REST and readiness traffic to FastAPI, and sends pages to Next.js:
 
 ```caddyfile
 {$MAFIA_DOMAIN:mafia.example.com} {
 	@auth path /auth/*
-	@copilotkit path /api/copilotkit /api/copilotkit/*
-	@api path /api/* /ag-ui /ag-ui/* /readyz
+	@api path /api/* /readyz
 
 	handle @auth {
 		reverse_proxy 127.0.0.1:3000
@@ -81,10 +79,7 @@ readiness traffic to FastAPI:
 		}
 
 		route {
-			reverse_proxy @copilotkit 127.0.0.1:3000
-			reverse_proxy @api 127.0.0.1:8000 {
-				flush_interval -1
-			}
+			reverse_proxy @api 127.0.0.1:8000
 			reverse_proxy 127.0.0.1:3000
 		}
 	}

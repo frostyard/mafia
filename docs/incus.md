@@ -18,7 +18,7 @@ incus profile edit mafia-personal < contrib/incus/personal.yaml
 ```
 
 The custom volume is mounted at `/var/lib/mafia`. It persists the service
-user's home, SQLite state, checkpoints, repository caches, analysis worktrees,
+user's home, SQLite state, pending actions, repository caches, analysis worktrees,
 implementation worktrees, and GitHub and Copilot sessions independently of
 the VM root disk.
 
@@ -118,6 +118,7 @@ Install the example systemd units and enable `mafia.target` as described in
 4. restart `mafia.target`.
 5. retain the previous release until the new version is healthy.
 
-The custom data volume is not replaced during release updates. Snapshot or
-back up `mafia-personal-data` before migrations and periodically test restore
-procedures.
+The custom data volume is not replaced during ordinary release updates. Back up
+`mafia-personal-data` before migrations and periodically test restore
+procedures. The control-plane upgrade in `docs/deployment.md` is an exception:
+it deliberately resets the data directory before its one-shot migration.

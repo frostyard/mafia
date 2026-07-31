@@ -134,11 +134,11 @@ incus exec mafia-frostyard -- ufw --force enable
 
 Install `contrib/Caddyfile` and configure its domain for the tailnet hostname.
 Caddy authenticates every application route before it reaches Next.js or
-FastAPI and preserves streaming for `/ag-ui`.
+FastAPI.
 
 ## Update, backup, and rotate
 
-Before an update, snapshot the data volume and retain the previous release.
+Before an update, back up the data volume and retain the previous release.
 Install the new release, run `bin/install`, atomically repoint
 `/opt/mafia/current`, restart `mafia.target`, and check readiness.
 

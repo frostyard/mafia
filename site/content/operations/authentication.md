@@ -61,7 +61,7 @@ Next.js and FastAPI both validate the signed browser session at their respective
 
 ## Publish through Caddy
 
-Expose only Caddy. The repository's [`contrib/Caddyfile`](https://github.com/frostyard/mafia/blob/main/contrib/Caddyfile) terminates TLS and applies `forward_auth` before routing pages and CopilotKit to Next.js or REST, AG-UI, and readiness traffic to FastAPI.
+Expose only Caddy. The repository's [`contrib/Caddyfile`](https://github.com/frostyard/mafia/blob/main/contrib/Caddyfile) terminates TLS and applies `forward_auth` before routing pages to Next.js and REST or readiness traffic to FastAPI.
 
 Set `MAFIA_DOMAIN` in Caddy's service environment, then validate and reload the configuration:
 

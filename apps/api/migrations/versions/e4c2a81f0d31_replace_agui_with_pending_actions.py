@@ -1,4 +1,4 @@
-"""replace AG-UI with pending actions
+"""replace the legacy workflow control plane with pending actions
 
 Revision ID: e4c2a81f0d31
 Revises: b8a1c7d4e2f0

@@ -32,7 +32,7 @@ publishing a terminal or replacement state. The control operation will request
 cancellation and wait for task termination. Only after termination will it close
 running operations and transition the run. If work does not stop within the bound,
 the original run state remains authoritative and the endpoint reports that work is
-still stopping. This prevents a new attempt or thread from overlapping old work.
+still stopping. This prevents a new attempt from overlapping old work.
 
 The in-memory active-task registry remains process-local. Startup and deployment
 surfaces will make the single-process requirement explicit and reject unsupported
@@ -57,9 +57,8 @@ values so backend changes cannot silently hide controls or reset presentation.
 
 ## Decision And Refresh Flow
 
-Decision cards will extract their prompt from
-`metadata.agent_framework.data.prompt`, retaining `interrupt.message` and generic
-copy as fallbacks. Request-type extraction remains metadata-based.
+Decision cards will extract their prompt from persisted action metadata, with
+generic copy as a fallback. Request-type extraction remains metadata-based.
 
 The run page will treat the run and activity responses as essential while evidence
 is optional. Evidence failure will produce a localized unavailable state rather
@@ -126,7 +125,7 @@ Each correction starts with a focused regression test where practical:
 1. Stale and duplicate phase start/cancel decisions are harmless and audited.
 2. Cancellation timeout leaves the original state and prevents another attempt.
 3. Frontend state vocabularies match backend contracts.
-4. AG-UI metadata prompts render in decision cards.
+4. Persisted action prompts render in decision cards.
 5. Evidence failure does not hide run/activity data.
 6. Dashboard decisions include `ready_for_phase`.
 7. Raw TOML cannot be silently discarded and timeout bounds are enforced.

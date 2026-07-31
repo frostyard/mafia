@@ -227,7 +227,7 @@ async def test_cancel_timeout_keeps_working_state(monkeypatch, active_run) -> No
         assert persisted.state == RunState.GENERATING_SPEC
 ```
 
-Add equivalent stalled-retry and reset tests asserting no replacement thread/state is published while work remains active.
+Add equivalent stalled-retry and reset tests asserting no replacement state is published while work remains active.
 
 - [ ] **Step 2: Run focused control tests and verify failure**
 

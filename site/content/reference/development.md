@@ -32,7 +32,7 @@ npm run dev:site
 Runtime state lives under `data/` and is excluded from Git:
 
 - SQLite workflow and operation state
-- AG-UI checkpoints
+- SQLite pending actions
 - Repository caches
 - Analysis worktrees
 - Phase implementation worktrees

@@ -37,8 +37,10 @@ The root `npm run dev` command loads the repository `.env` into Next.js.
 Authentication remains disabled unless `MAFIA_AUTH_MODE=github` is explicitly
 configured; see [GitHub web authentication](authentication.md).
 
-Runtime state is stored under `data/` and intentionally excluded from Git. It includes SQLite state,
-checkpoints, repository caches, analysis worktrees, and phase worktrees.
+Runtime state is stored under `data/` and intentionally excluded from Git. It
+includes SQLite state, pending actions, repository caches, analysis worktrees,
+and phase worktrees. The data-reset command is destructive and requires an
+explicit `MAFIA_DATA_DIR`; it refuses a target with any symlink path component.
 
 ## Validation
 

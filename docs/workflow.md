@@ -4,8 +4,17 @@ MAFIA supports specification delivery and ad-hoc pull request review as separate
 
 ## Specification delivery
 
-Create a run with an `owner/repository`, a GitHub issue number or URL or written requirement, and a primary
-model. Open the run and select **Start workflow**.
+Create a run with an `owner/repository`, a GitHub issue number or URL or written
+requirement, and a primary model. Start it with `POST /api/runs/{id}/start`.
+The API registers background work before returning, so closing or navigating
+away from the browser does not cancel model or implementation work.
+
+The run detail and activity responses expose at most one SQLite-backed
+`pending_action`. It is the durable approval mechanism: submit its exact action
+ID with `POST /api/runs/{id}/decisions/{action_id}` and an allowed decision
+payload. The UI renders controls from that record rather than inferring them
+from lifecycle state. It polls activity every three seconds and refreshes when
+the run, action, artifact, or phase changes.
 
 The delivery workflow:
 
@@ -47,9 +56,12 @@ operator can adjust the specification or explicitly retry the failed phase, whic
 review cycle. Review, remediation, and verification budgets and candidate diff hashes survive process
 restarts, so reconnecting cannot create an automatic review/fix loop.
 
-Workflow interrupts, checkpoints, artifacts, source evidence, approvals, operations, and execution state
-persist under `data/` and survive application restarts. On startup, MAFIA reconciles interrupted work and
-existing GitHub pull requests before retrying side effects.
+Run state, pending actions, artifacts, source evidence, approvals, operations,
+and execution state persist in SQLite under `MAFIA_DATA_DIR`. Background work is
+owned by the API process, not the browser. If that process stops while a run is
+working, startup reconciliation marks the run failed; it never resumes work
+automatically. Use `POST /api/runs/{id}/retry` to explicitly launch the next
+attempt from persisted state.
 
 The selected primary model generates the specification, plan, and implementation. Its reviewer comes from
 the configured model-pair mapping. The default mapping is reciprocal:
@@ -90,11 +102,10 @@ only. Model tools cannot post comments directly.
 
 ## Returning to the specification
 
-After a specification exists, **Adjust specification** returns the run to that specification's decision
-gate from planning, implementation, merge waiting, failure, cancellation, or completion. Active model work
-is cancelled first. The active plan and phases that have not produced a pull request are invalidated, while
-merged phases and phases with an open pull request remain immutable and continue to gate later work.
-
-The reset creates a new durable AG-UI thread so stale artifact or phase decisions cannot resume. Refine the
-restored specification with feedback, accept the new revision, and MAFIA will ground and adversarially
-review a replacement plan against current source truth.
+After a specification exists, **Adjust specification** returns the run to that
+specification's decision gate from planning, implementation, merge waiting,
+failure, cancellation, or completion. Active model work is cancelled first. The
+active plan and phases that have not produced a pull request are invalidated,
+while merged phases and phases with an open pull request remain immutable and
+continue to gate later work. The reset creates a replacement pending action, so
+only the current persisted decision can be submitted.

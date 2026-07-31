@@ -60,3 +60,54 @@ def test_frontend_source_has_no_copilotkit_or_ag_ui_route() -> None:
     assert "@copilotkit/" not in source
     assert "@ag-ui/" not in source
     assert not (source_root / "app" / "api" / "ag-ui").exists()
+
+
+def test_repository_has_no_legacy_workflow_control_plane_surfaces() -> None:
+    runtime_paths = [
+        *Path("apps/api/src").rglob("*.py"),
+        *Path("apps/api/migrations").rglob("*.py"),
+        *Path("apps/web/src").rglob("*.ts"),
+        *Path("apps/web/src").rglob("*.tsx"),
+        Path("pyproject.toml"),
+        Path("uv.lock"),
+        Path("package.json"),
+        Path("apps/web/package.json"),
+        Path("apps/web/package-lock.json"),
+        Path(".env.example"),
+        *Path("contrib/incus").glob("*.env.example"),
+        Path("contrib/Caddyfile"),
+    ]
+    operator_docs = [
+        *Path("docs").rglob("*.md"),
+        *Path("site/content").rglob("*.md"),
+    ]
+    approved_history = {
+        Path("docs/superpowers/specs/2026-07-30-remove-ag-ui-design.md"),
+        Path("docs/superpowers/plans/2026-07-30-remove-ag-ui.md"),
+    }
+    legacy_runtime_terms = (
+        "agent_framework.ag_ui",
+        "FileCheckpointStorage",
+        "WorkflowBuilder",
+        "WorkflowContext",
+        "request_info",
+        "@copilotkit/",
+        "@ag-ui/",
+        "useAgent",
+        "useInterrupt",
+        "/ag-ui",
+        "copilotkit",
+    )
+    legacy_doc_terms = re.compile(
+        r"\\b(?:ag-ui|copilotkit|checkpoint(?:s)?|snapshot(?:s)?|thread(?:s)?|interrupt restoration)\\b",
+        re.I,
+    )
+
+    for path in runtime_paths:
+        source = path.read_text()
+        assert all(term.lower() not in source.lower() for term in legacy_runtime_terms), path
+
+    for path in operator_docs:
+        if path in approved_history:
+            continue
+        assert not legacy_doc_terms.search(path.read_text()), path

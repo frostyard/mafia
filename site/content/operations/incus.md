@@ -19,7 +19,7 @@ incus profile create mafia-personal
 incus profile edit mafia-personal < contrib/incus/personal.yaml
 ```
 
-The custom volume is mounted at `/var/lib/mafia`. It persists the service user's home, workflow database, checkpoints, repository caches, worktrees, and authenticated CLI sessions.
+The custom volume is mounted at `/var/lib/mafia`. It persists the service user's home, workflow database, pending actions, repository caches, worktrees, and authenticated CLI sessions.
 
 ## Launch the VM
 
@@ -47,4 +47,4 @@ Join Tailscale from inside the VM without storing a reusable auth key in the pro
 
 Do not add an Incus proxy device or public port forward. Permit HTTPS only on `tailscale0`; keep Next.js and FastAPI bound to loopback.
 
-See the repository's [complete Incus guide](https://github.com/frostyard/mafia/blob/main/docs/incus.md) for release installation, firewall, systemd, update, backup, and restore procedures.
+See the repository's [complete Incus guide](https://github.com/frostyard/mafia/blob/main/docs/incus.md) for release installation, firewall, systemd, update, backup, restore, and destructive-upgrade procedures.
