@@ -3,11 +3,12 @@ import stat
 import subprocess
 from pathlib import Path
 
-
 RESET_SCRIPT = Path("packaging/bin/reset-data").resolve()
 
 
-def run_reset(*args: str, data_dir: str | None = None, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+def run_reset(
+    *args: str, data_dir: str | None = None, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     if data_dir is None:
         environment.pop("MAFIA_DATA_DIR", None)
@@ -43,9 +44,7 @@ def test_reset_rejects_normalized_root_current_and_parent_directories(tmp_path: 
     current.mkdir()
 
     for unsafe_target in ("/", ".", "./child/..", "..", "child/../.."):
-        result = run_reset(
-            "--confirm-destructive-reset", data_dir=unsafe_target, cwd=current
-        )
+        result = run_reset("--confirm-destructive-reset", data_dir=unsafe_target, cwd=current)
 
         assert result.returncode == 2
         assert "Refusing unsafe MAFIA_DATA_DIR" in result.stderr

@@ -8,7 +8,6 @@ import httpx
 import pytest
 from mafia.domain.enums import OperationStatus, PhaseState, RunState
 
-
 LEGACY_DOC_TERMS = re.compile(
     r"\b(?:ag-ui|copilotkit|checkpoint(?:s)?|snapshot(?:s)?|thread(?:s)?|interrupt restoration)\b",
     re.I,
@@ -25,9 +24,7 @@ def test_frontend_workflow_states_match_backend() -> None:
     source = Path("apps/web/src/lib/workflow-state.ts").read_text()
     assert _typescript_values(source, "RUN_STATES") == {state.value for state in RunState}
     assert _typescript_values(source, "PHASE_STATES") == {state.value for state in PhaseState}
-    assert _typescript_values(source, "OPERATION_STATUSES") == {
-        status.value for status in OperationStatus
-    }
+    assert _typescript_values(source, "OPERATION_STATUSES") == {status.value for status in OperationStatus}
 
 
 @pytest.mark.asyncio
@@ -43,9 +40,7 @@ async def test_ag_ui_endpoint_is_not_registered() -> None:
 
 def test_source_has_no_ag_ui_or_framework_workflow_imports() -> None:
     source_root = Path("apps/api/src")
-    source = "\n".join(
-        path.read_text() for path in sorted(source_root.rglob("*.py"))
-    )
+    source = "\n".join(path.read_text() for path in sorted(source_root.rglob("*.py")))
 
     for legacy_api in (
         "agent_framework.ag_ui",
@@ -61,9 +56,7 @@ def test_source_has_no_ag_ui_or_framework_workflow_imports() -> None:
 def test_frontend_source_has_no_copilotkit_or_ag_ui_route() -> None:
     source_root = Path("apps/web/src")
     source = "\n".join(
-        path.read_text()
-        for path in sorted(source_root.rglob("*"))
-        if path.suffix in {".ts", ".tsx"}
+        path.read_text() for path in sorted(source_root.rglob("*")) if path.suffix in {".ts", ".tsx"}
     )
 
     assert "@copilotkit/" not in source
@@ -115,9 +108,7 @@ def test_alembic_requires_release_root_for_relative_paths(tmp_path: Path) -> Non
         text=True,
     )
     assert outside_result.returncode != 0
-    assert "Path doesn't exist: apps/api/migrations" in (
-        outside_result.stdout + outside_result.stderr
-    )
+    assert "Path doesn't exist: apps/api/migrations" in (outside_result.stdout + outside_result.stderr)
 
     inside_result = subprocess.run(
         [*command, "upgrade", "head"],
