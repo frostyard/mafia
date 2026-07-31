@@ -28,10 +28,10 @@ if [[ "$(realpath -e -- "$probe")" != "$(realpath -m -s -- "$probe")" ]]; then
   exit 2
 fi
 
-# Module caches can contain read-only directories. Keep recursive chmod physical so
-# descendant symlinks cannot lead outside the already-validated target.
+# Module caches can contain read-only directories. Recursive chmod ignores symlinks
+# it encounters, so descendants cannot lead outside the already-validated target.
 if [[ -e "$target" ]]; then
-  chmod -R -P u+w -- "$target"
+  chmod -R u+w -- "$target"
 fi
 rm -rf -- "$target"
 install -d -m 0750 -- "$target"
