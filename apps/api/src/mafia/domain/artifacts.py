@@ -166,25 +166,8 @@ class ArtifactDecision(BaseModel):
         return self
 
 
-class ArtifactDecisionRequest(BaseModel):
-    run_id: str
-    artifact_id: str
-    artifact_kind: Literal["specification", "plan"]
-    revision: int
-    prompt: str
-
-
 class PhaseDecision(BaseModel):
     action: Literal["start", "cancel"]
-
-
-class PhaseDecisionRequest(BaseModel):
-    run_id: str
-    phase_id: str
-    ordinal: int
-    title: str
-    objective: str
-    prompt: str
 
 
 class PhaseExecutionReport(BaseModel):
@@ -466,14 +449,6 @@ class ConsolidatedPullRequestReview(BaseModel):
 
 class PullRequestReviewDecision(BaseModel):
     action: Literal["post", "finish", "cancel"]
-
-
-class PullRequestReviewDecisionRequest(BaseModel):
-    run_id: str
-    artifact_id: str
-    revision: int
-    pull_request_number: int
-    prompt: str
 
 
 def specification_markdown(specification: Specification) -> str:

@@ -35,7 +35,7 @@ class PendingActionSpec:
     artifact_id: str | None = None
     phase_id: str | None = None
     revision: int | None = None
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, Any] = field(default_factory=lambda: dict[str, Any]())
 
 
 async def create_run(session: AsyncSession, request: RunCreate) -> Run:
@@ -120,7 +120,7 @@ async def transition_run(
     event_type: str,
     payload: dict[str, object] | None = None,
 ) -> Run:
-    run, current = await _transition_without_commit(
+    _, current = await _transition_without_commit(
         session, run_id, target, expected_version=expected_version
     )
     session.add(
@@ -146,7 +146,7 @@ async def transition_with_pending_action(
     pending: PendingActionSpec,
     payload: dict[str, object] | None = None,
 ) -> Run:
-    run, current = await _transition_without_commit(
+    _, current = await _transition_without_commit(
         session, run_id, target, expected_version=expected_version
     )
     await session.execute(delete(PendingAction).where(PendingAction.run_id == run_id))

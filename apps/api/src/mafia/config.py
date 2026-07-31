@@ -243,10 +243,6 @@ class Settings(BaseSettings):
         return self.data_dir / "worktrees"
 
     @property
-    def checkpoints_dir(self) -> Path:
-        return self.data_dir / "checkpoints"
-
-    @property
     def projects_dir(self) -> Path:
         return self.data_dir / "projects"
 
@@ -255,7 +251,6 @@ class Settings(BaseSettings):
             self.data_dir,
             self.repositories_dir,
             self.worktrees_dir,
-            self.checkpoints_dir,
             self.projects_dir,
         ):
             path.mkdir(parents=True, exist_ok=True, mode=0o700)
