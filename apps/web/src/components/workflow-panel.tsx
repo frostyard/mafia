@@ -92,9 +92,7 @@ function DecisionCard({ action, runId, projectId }: { action: PendingAction; run
         {isArtifact ? (
           <button className="button button-secondary" disabled={isResponding || !feedback.trim()} onClick={() => respond({ action: "refine", feedback: feedback.trim() })} type="button">Refine</button>
         ) : null}
-        {action.kind !== "configuration_required" ? (
-          <button className="button button-quiet" disabled={isResponding} onClick={() => respond({ action: "cancel" })} type="button">Cancel</button>
-        ) : null}
+        <button className="button button-quiet" disabled={isResponding} onClick={() => respond({ action: "cancel" })} type="button">Cancel</button>
       </div>
       {error ? <p className="form-alert" role="alert">{error}</p> : null}
     </section>

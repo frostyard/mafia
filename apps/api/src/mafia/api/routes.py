@@ -282,7 +282,7 @@ async def runs_retry(run_id: str, _: Operator) -> RunActivity:
             status_code=404,
             detail={"code": "run_not_found", "message": run_id},
         ) from error
-    except (ConcurrentUpdateError, RunControlError) as error:
+    except (ActiveWorkError, ConcurrentUpdateError, RunControlError) as error:
         raise HTTPException(
             status_code=409,
             detail={"code": "run_control_conflict", "message": str(error)},
@@ -303,7 +303,7 @@ async def runs_submit_decision(
             status_code=404,
             detail={"code": "run_not_found", "message": run_id},
         ) from error
-    except (ConcurrentUpdateError, RunControlError) as error:
+    except (ActiveWorkError, ConcurrentUpdateError, RunControlError) as error:
         raise HTTPException(
             status_code=409,
             detail={"code": "run_control_conflict", "message": str(error)},

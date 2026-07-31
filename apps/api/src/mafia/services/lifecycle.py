@@ -11,7 +11,7 @@ from mafia.db.session import SessionFactory
 from mafia.domain.enums import PhaseState, RunState
 from mafia.services.commands import CommandError, run_command
 from mafia.services.github import get_pr, gh_json
-from mafia.services.operations import launch_background_work
+from mafia.services.operations import ActiveWorkError, has_active_work, launch_background_work
 from mafia.services.repositories import (
     RepositoryIdentity,
     require_repository_owner,
@@ -371,6 +371,8 @@ async def _reconcile_run(run_id: str) -> dict[str, Any]:
             )
         )
         material_drift = bool(external_changes) and _touches_planned_files(external_changes, remaining)
+        if material_drift and has_active_work(run_id):
+            raise ActiveWorkError(f"Run {run_id} already has active work")
         pending_action = None
         next_phase: Phase | None = None
         if material_drift:

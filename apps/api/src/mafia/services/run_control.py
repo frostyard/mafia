@@ -1,9 +1,20 @@
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from mafia.db.models import Artifact, AuditEvent, Decision, PendingAction, Phase, Run, SourceSnapshot
+from mafia.config import get_settings
+from mafia.db.models import (
+    Artifact,
+    AuditEvent,
+    Decision,
+    Operation,
+    PendingAction,
+    Phase,
+    Run,
+    SourceSnapshot,
+)
 from mafia.db.session import SessionFactory
 from mafia.domain.artifacts import ImplementationPlan
 from mafia.domain.enums import (
@@ -20,10 +31,16 @@ from mafia.services.artifacts import ArtifactGenerator
 from mafia.services.commands import run_command
 from mafia.services.devcontainers import create_execution_environment
 from mafia.services.github import post_pull_request_comment
-from mafia.services.operations import has_active_work, launch_background_work, tracked_operation
+from mafia.services.operations import (
+    ActiveWorkError,
+    has_active_work,
+    launch_background_work,
+    run_work_lock,
+    tracked_operation,
+)
 from mafia.services.pr_reviews import PullRequestReviewService
 from mafia.services.project_config import (
-    ProjectConfigurationError,
+    repository_configuration_content_at_commit,
     resolve_project_configuration_content,
     run_deterministic_validation,
     source_validation_status,
@@ -85,23 +102,6 @@ async def record_run_failure(run_id: str, stage: str, error: BaseException) -> N
         )
 
 
-async def record_run_status(
-    run_id: str,
-    event_type: str,
-    message: str,
-    payload: dict[str, object] | None = None,
-) -> None:
-    async with SessionFactory() as session:
-        session.add(
-            AuditEvent(
-                run_id=run_id,
-                event_type=event_type,
-                payload={"message": message, **(payload or {})},
-            )
-        )
-        await session.commit()
-
-
 async def _run_guarded(
     run_id: str,
     stage: str,
@@ -130,10 +130,43 @@ async def start_run(run_id: str) -> RunActivity:
 
 
 async def retry_run(run_id: str) -> RunActivity:
+    async with run_work_lock(run_id):
+        return await _retry_run(run_id)
+
+
+async def _retry_run(run_id: str) -> RunActivity:
     async with SessionFactory() as session:
         run = await get_run(session, run_id)
-        if run.state != RunState.FAILED:
-            raise RunControlError("Only a failed run can be retried")
+        state = run.state
+    if state != RunState.FAILED:
+        from mafia.services.activity import WORKING_STATES, stop_active_work
+
+        threshold = datetime.now(UTC) - timedelta(seconds=get_settings().operation_stall_seconds)
+        async with SessionFactory() as session:
+            stalled = await session.scalar(
+                select(Operation.id)
+                .where(
+                    Operation.run_id == run_id,
+                    Operation.status == "running",
+                    (Operation.heartbeat_at < threshold) | (Operation.progress_at < threshold),
+                )
+                .limit(1)
+            )
+        if state not in WORKING_STATES or stalled is None:
+            raise RunControlError("Only a failed or stalled run can be retried")
+        await stop_active_work(run_id, "The stalled workflow was stopped before retrying.")
+        async with SessionFactory() as session:
+            run = await get_run(session, run_id)
+            if run.state in WORKING_STATES:
+                run.failure_code = "stalled"
+                run.failure_message = "The workflow stalled and was stopped before retrying."
+                await transition_run(
+                    session,
+                    run.id,
+                    RunState.FAILED,
+                    expected_version=run.version,
+                    event_type="run.stalled_retry_requested",
+                )
     if has_active_work(run_id):
         raise RunControlError("The previous workflow attempt is still stopping")
     launch_background_work(
@@ -285,18 +318,12 @@ async def _review_pull_request_inner(run_id: str) -> None:
     base_sha = context.get("base_sha")
     if not isinstance(base_sha, str):
         raise RunControlError("Pull-request snapshot has no base SHA")
-    base_configuration = await run_command(
-        ("git", "-C", snapshot.worktree_path, "show", f"{base_sha}:.mafia.toml"),
-        check=False,
+    base_configuration = await repository_configuration_content_at_commit(
+        ("-C", snapshot.worktree_path), base_sha, command_runner=run_command
     )
-    if base_configuration.returncode != 0 and "does not exist in" not in base_configuration.stderr:
-        raise ProjectConfigurationError(
-            f"Could not read repository .mafia.toml at {base_sha}: "
-            f"{base_configuration.stderr.strip()[-1_000:]}"
-        )
     project_configuration = resolve_project_configuration_content(
         identity,
-        base_configuration.stdout if base_configuration.returncode == 0 else None,
+        base_configuration,
     )
     validation_results: list[dict[str, object]] = []
     if project_configuration.validation_commands:
@@ -655,6 +682,17 @@ async def _transition_state(
 
 
 async def submit_decision(
+    run_id: str,
+    pending_action_id: str,
+    payload: DecisionSubmission,
+) -> RunActivity:
+    async with run_work_lock(run_id):
+        if has_active_work(run_id):
+            raise ActiveWorkError(f"Run {run_id} already has active work")
+        return await _submit_decision(run_id, pending_action_id, payload)
+
+
+async def _submit_decision(
     run_id: str,
     pending_action_id: str,
     payload: DecisionSubmission,

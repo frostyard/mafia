@@ -288,7 +288,7 @@ async def _close_running_operations(run_id: str, reason: str) -> None:
         await session.commit()
 
 
-async def _stop_active_work(run_id: str, reason: str) -> None:
+async def stop_active_work(run_id: str, reason: str) -> None:
     cancel_active_work(run_id)
     await _wait_for_active_work(run_id)
     await _close_running_operations(run_id, reason)
@@ -302,7 +302,7 @@ async def cancel_run(run_id: str) -> RunActivity:
         )
         if run.state not in WORKING_STATES:
             raise RunControlError("Only active work can be cancelled from the activity rail")
-    await _stop_active_work(run_id, "The user cancelled active work.")
+    await stop_active_work(run_id, "The user cancelled active work.")
     async with SessionFactory() as session:
         run = await get_run(session, run_id)
         if run.state in WORKING_STATES:
@@ -332,7 +332,7 @@ async def reset_to_specification(run_id: str) -> Run:
         stop_required = was_working or has_active_work(run_id)
 
     if stop_required:
-        await _stop_active_work(
+        await stop_active_work(
             run_id,
             "Active work was cancelled to return to specification refinement.",
         )

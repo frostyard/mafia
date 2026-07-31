@@ -157,7 +157,7 @@ describe("WorkflowPanel", () => {
         action: "finish",
       }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Cancel" }).at(-1)!);
     await waitFor(() =>
       expect(submitDecision).toHaveBeenCalledWith("run-1", "action-1", {
         action: "cancel",
@@ -179,6 +179,12 @@ describe("WorkflowPanel", () => {
     await waitFor(() =>
       expect(submitDecision).toHaveBeenCalledWith("run-1", "action-1", {
         action: "check_again",
+      }),
+    );
+    fireEvent.click(screen.getAllByRole("button", { name: "Cancel" }).at(-1)!);
+    await waitFor(() =>
+      expect(submitDecision).toHaveBeenCalledWith("run-1", "action-1", {
+        action: "cancel",
       }),
     );
   });

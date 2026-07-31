@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 from mafia.config import Settings
+from mafia.services.commands import CommandResult
 from mafia.services.project_config import (
     ProjectConfigurationError,
     parse_project_configuration,
@@ -89,9 +90,7 @@ run = "make check"
 
     assert resolved.execution_mode == "host"
     assert resolved.validation_source == "repository"
-    assert [command.run for command in resolved.validation_commands] == [
-        "npm run check"
-    ]
+    assert [command.run for command in resolved.validation_commands] == ["npm run check"]
 
 
 def test_host_configuration_is_used_when_repository_file_is_absent(
@@ -173,3 +172,21 @@ async def test_source_validation_uses_host_when_config_exists_only_on_disk(
 
     assert available is True
     assert source == "host"
+
+
+@pytest.mark.asyncio
+async def test_source_validation_rejects_an_invalid_commit_without_parsing_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mafia.services import project_config
+
+    async def invalid_commit(command: tuple[str, ...], *, check: bool = True) -> CommandResult:
+        del check
+        assert command[-1].endswith("^{commit}")
+        return CommandResult(command, 1, "", "提交不存在")
+
+    monkeypatch.setattr(project_config, "run_command", invalid_commit)
+    with pytest.raises(ProjectConfigurationError, match="Could not read repository commit"):
+        await source_validation_status(
+            RepositoryIdentity("octo", "repo"), str(tmp_path / "cache.git"), "bad-sha"
+        )

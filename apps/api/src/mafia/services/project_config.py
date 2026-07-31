@@ -2,12 +2,13 @@ import hashlib
 import os
 import shlex
 import tomllib
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from mafia.config import Settings, get_settings
-from mafia.services.commands import run_command
+from mafia.services.commands import CommandResult, run_command
 from mafia.services.operations import tracked_operation
 from mafia.services.repositories import RepositoryIdentity
 from mafia.services.sandbox import ExecutionEnvironment
@@ -81,9 +82,7 @@ class ResolvedProjectConfiguration:
             "execution_mode": self.execution_mode,
             "validation_source": self.validation_source,
             "validation_sha256": self.validation_sha256,
-            "validation_commands": [
-                command.model_dump() for command in self.validation_commands
-            ],
+            "validation_commands": [command.model_dump() for command in self.validation_commands],
         }
 
 
@@ -200,9 +199,7 @@ def resolve_project_configuration(
         validation_commands=tuple(validation.commands if validation is not None else ()),
         validation_source=source,
         validation_sha256=(
-            hashlib.sha256(digest_content.encode()).hexdigest()
-            if validation is not None
-            else None
+            hashlib.sha256(digest_content.encode()).hexdigest() if validation is not None else None
         ),
     )
 
@@ -214,9 +211,7 @@ def resolve_project_configuration_content(
 ) -> ResolvedProjectConfiguration:
     host, host_content, _ = read_host_project_configuration(identity, settings)
     if repository_content is not None:
-        repository = parse_project_configuration(
-            repository_content, source="repository"
-        )
+        repository = parse_project_configuration(repository_content, source="repository")
         validation = repository.validation
         source: Literal["repository", "host", "missing"] = (
             "repository" if validation is not None else "missing"
@@ -231,9 +226,7 @@ def resolve_project_configuration_content(
         validation_commands=tuple(validation.commands if validation is not None else ()),
         validation_source=source,
         validation_sha256=(
-            hashlib.sha256(digest_content.encode()).hexdigest()
-            if validation is not None
-            else None
+            hashlib.sha256(digest_content.encode()).hexdigest() if validation is not None else None
         ),
     )
 
@@ -247,49 +240,43 @@ async def source_validation_status(
     host, _, _ = read_host_project_configuration(identity, settings)
     if cache_path is None:
         return host.validation is not None, "host" if host.validation is not None else "missing"
-    commit = await run_command(
-        (
-            "git",
-            "--git-dir",
-            cache_path,
-            "cat-file",
-            "-e",
-            f"{source_sha}^{{commit}}",
-        ),
-        check=False,
-    )
-    if commit.returncode != 0:
-        raise ProjectConfigurationError(
-            f"Could not read repository commit {source_sha}: "
-            f"{commit.stderr.strip()[-1_000:]}"
-        )
-    repository_configuration = await run_command(
-        (
-            "git",
-            "--git-dir",
-            cache_path,
-            "cat-file",
-            "-e",
-            f"{source_sha}:.mafia.toml",
-        ),
-        check=False,
-    )
-    if repository_configuration.returncode != 0:
+    content = await repository_configuration_content_at_commit(("--git-dir", cache_path), source_sha)
+    if content is None:
         return host.validation is not None, "host" if host.validation is not None else "missing"
-    result = await run_command(
-        ("git", "--git-dir", cache_path, "show", f"{source_sha}:.mafia.toml"),
-        check=False,
-    )
-    if result.returncode != 0:
-        raise ProjectConfigurationError(
-            f"Could not read repository .mafia.toml at {source_sha}: "
-            f"{result.stderr.strip()[-1_000:]}"
-        )
-    repository = parse_project_configuration(result.stdout, source="repository")
+    repository = parse_project_configuration(content, source="repository")
     return (
         repository.validation is not None,
         "repository" if repository.validation is not None else "missing",
     )
+
+
+async def repository_configuration_content_at_commit(
+    git_location: tuple[str, str],
+    source_sha: str,
+    *,
+    command_runner: Callable[..., Awaitable[CommandResult]] | None = None,
+) -> str | None:
+    command = command_runner or run_command
+    commit = await command(("git", *git_location, "cat-file", "-e", f"{source_sha}^{{commit}}"), check=False)
+    if commit.returncode != 0:
+        raise ProjectConfigurationError(
+            f"Could not read repository commit {source_sha}: {commit.stderr.strip()[-1_000:]}"
+        )
+    repository_configuration = await command(
+        ("git", *git_location, "cat-file", "-e", f"{source_sha}:.mafia.toml"),
+        check=False,
+    )
+    if repository_configuration.returncode != 0:
+        return None
+    result = await command(
+        ("git", *git_location, "show", f"{source_sha}:.mafia.toml"),
+        check=False,
+    )
+    if result.returncode != 0:
+        raise ProjectConfigurationError(
+            f"Could not read repository .mafia.toml at {source_sha}: {result.stderr.strip()[-1_000:]}"
+        )
+    return result.stdout
 
 
 async def run_deterministic_validation(
@@ -304,10 +291,7 @@ async def run_deterministic_validation(
     for index, validation_command in enumerate(configuration.validation_commands, 1):
         command = validation_command.run
         if validation_command.working_directory != ".":
-            command = (
-                f"cd {shlex.quote(validation_command.working_directory)} && "
-                f"{validation_command.run}"
-            )
+            command = f"cd {shlex.quote(validation_command.working_directory)} && {validation_command.run}"
         async with tracked_operation(
             run_id=run_id,
             phase_id=phase_id,

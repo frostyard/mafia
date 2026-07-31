@@ -2,7 +2,7 @@ import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Literal
 from unittest.mock import AsyncMock
 
 import pytest
@@ -490,6 +490,80 @@ async def test_specification_refine_consumes_action_before_launching_generation(
     assert refined.state == RunState.GENERATING_SPEC
     assert decision.feedback == "Clarify the rollout."
     assert launched == [run.id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("decision", ["accept", "refine"])
+async def test_artifact_decision_with_active_work_has_no_side_effects(
+    session_factory: async_sessionmaker[AsyncSession],
+    decision: Literal["accept", "refine"],
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.AWAITING_SPEC_DECISION)
+        artifact = Artifact(
+            run_id=run.id,
+            kind=ArtifactKind.SPECIFICATION,
+            revision=1,
+            structured_data=specification().model_dump(mode="json"),
+            rendered_markdown="# Specification",
+            model=run.primary_model,
+        )
+        session.add(artifact)
+        await session.flush()
+        run.active_spec_revision = 1
+        run.pending_action = PendingAction(
+            kind=PendingActionKind.SPECIFICATION,
+            artifact_id=artifact.id,
+            revision=1,
+            expected_run_version=run.version,
+            payload={},
+        )
+        await session.commit()
+        action_id = pending_action_id(run)
+
+    release = asyncio.Event()
+
+    async def producer() -> None:
+        await release.wait()
+
+    operations.launch_background_work(run.id, producer)
+    with pytest.raises(operations.ActiveWorkError):
+        await run_control.submit_decision(
+            run.id,
+            action_id,
+            DecisionSubmission(action=decision, feedback="Refine" if decision == "refine" else None),
+        )
+
+    async with session_factory() as session:
+        unchanged = await session.get(Run, run.id)
+        action = await session.get(PendingAction, action_id)
+        decisions = list(await session.scalars(select(Decision).where(Decision.run_id == run.id)))
+    assert unchanged is not None and unchanged.state == RunState.AWAITING_SPEC_DECISION
+    assert action is not None
+    assert decisions == []
+    release.set()
+    await asyncio.sleep(0)
+
+    launched: list[Callable[[], Awaitable[None]]] = []
+    original_launch = run_control.launch_background_work
+    def record_launch(_run_id: str, work: Callable[[], Awaitable[None]]) -> None:
+        launched.append(work)
+
+    run_control.launch_background_work = record_launch
+    try:
+        await run_control.submit_decision(
+            run.id,
+            action_id,
+            DecisionSubmission(action=decision, feedback="Refine" if decision == "refine" else None),
+        )
+    finally:
+        run_control.launch_background_work = original_launch
+    async with session_factory() as session:
+        remaining_action = await session.get(PendingAction, action_id)
+        decisions = list(await session.scalars(select(Decision).where(Decision.run_id == run.id)))
+    assert remaining_action is None
+    assert len(decisions) == 1
+    assert len(launched) == 1
 
 
 @pytest.mark.asyncio
@@ -1185,15 +1259,17 @@ async def test_pull_request_review_persists_post_action(
 
     monkeypatch.setattr(run_control, "capture_pull_request_snapshot", capture)
     monkeypatch.setattr(run_control, "PullRequestReviewService", FakePullRequestReviewService)
-    monkeypatch.setattr(
-        run_control,
-        "run_command",
-        AsyncMock(
-            return_value=CommandResult(
-                (), 1, "", "path '.mafia.toml' does not exist in aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-            )
-        ),
-    )
+    commands: list[tuple[str, ...]] = []
+
+    async def command(command: tuple[str, ...], *, check: bool = True) -> CommandResult:
+        del check
+        commands.append(command)
+        if command[-1].endswith("^{commit}"):
+            return CommandResult(command, 0, "", "")
+        assert command[-2:] == ("cat-file", "-e") or command[-3] == "cat-file"
+        return CommandResult(command, 1, "", "不存在")
+
+    monkeypatch.setattr(run_control, "run_command", command)
     await run_control.advance_run(run.id)
 
     async with session_factory() as session:
@@ -1202,6 +1278,7 @@ async def test_pull_request_review_persists_post_action(
     assert reviewed.pending_action is not None
     assert reviewed.pending_action.kind == PendingActionKind.PULL_REQUEST_REVIEW
     assert reviewed.pending_action.payload["pull_request_number"] == 42
+    assert [command[-2] for command in commands] == ["-e", "-e"]
 
 
 @pytest.mark.asyncio
@@ -1311,6 +1388,24 @@ async def test_pull_request_review_post_launches_after_consuming_action(
         )
         await session.commit()
         action_id = pending_action_id(run)
+
+    release = asyncio.Event()
+
+    async def producer() -> None:
+        await release.wait()
+
+    operations.launch_background_work(run.id, producer)
+    with pytest.raises(operations.ActiveWorkError):
+        await run_control.submit_decision(run.id, action_id, DecisionSubmission(action="post"))
+    async with session_factory() as session:
+        unchanged = await get_run(session, run.id)
+        action = await session.get(PendingAction, action_id)
+        decisions = list(await session.scalars(select(Decision).where(Decision.run_id == run.id)))
+    assert unchanged.state == RunState.AWAITING_PR_REVIEW_DECISION
+    assert action is not None
+    assert decisions == []
+    release.set()
+    await asyncio.sleep(0)
 
     launched: list[Callable[[], Awaitable[None]]] = []
 

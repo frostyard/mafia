@@ -1,9 +1,9 @@
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 
 import pytest
 from mafia.db.base import Base
-from mafia.db.models import AuditEvent, Repository, Run
+from mafia.db.models import AuditEvent, Operation, Repository, Run
 from mafia.domain.enums import RequirementType, RunState
 from mafia.services import run_control
 from mafia.services.operations import ActiveWorkError, has_active_work, launch_background_work
@@ -13,8 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 
 @pytest.fixture
-async def run_control_session_factory(
-) -> AsyncGenerator[async_sessionmaker[AsyncSession]]:
+async def run_control_session_factory() -> AsyncGenerator[async_sessionmaker[AsyncSession]]:
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as connection:
         await connection.run_sync(Base.metadata.create_all)
@@ -97,34 +96,12 @@ async def test_worker_failure_marks_run_failed(
 
     async with run_control_session_factory() as session:
         run = await get_run(session, "run-1")
-        event = await session.scalar(
-            select(AuditEvent).where(AuditEvent.run_id == "run-1")
-        )
+        event = await session.scalar(select(AuditEvent).where(AuditEvent.run_id == "run-1"))
     assert run.state == RunState.FAILED
     assert run.failure_code == "planning_failed"
     assert run.failure_message == "x" * 4_000
     assert event is not None
     assert event.event_type == "planning.failed"
-
-
-@pytest.mark.asyncio
-async def test_record_run_status_persists_message_and_payload(
-    run_control_session_factory: async_sessionmaker[AsyncSession],
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(run_control, "SessionFactory", run_control_session_factory)
-
-    await run_control.record_run_status(
-        "run-1", "workflow.progress", "Grounding source", {"step": 1}
-    )
-
-    async with run_control_session_factory() as session:
-        event = await session.scalar(
-            select(AuditEvent).where(AuditEvent.run_id == "run-1")
-        )
-    assert event is not None
-    assert event.event_type == "workflow.progress"
-    assert event.payload == {"message": "Grounding source", "step": 1}
 
 
 @pytest.mark.asyncio
@@ -149,5 +126,52 @@ async def test_retry_run_rejects_a_run_that_has_not_failed(
 ) -> None:
     monkeypatch.setattr(run_control, "SessionFactory", run_control_session_factory)
 
-    with pytest.raises(run_control.RunControlError, match="Only a failed run"):
+    with pytest.raises(run_control.RunControlError, match="Only a failed or stalled run"):
         await run_control.retry_run("run-1")
+
+
+@pytest.mark.asyncio
+async def test_retry_run_recovers_a_genuinely_stalled_working_run(
+    run_control_session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    monkeypatch.setattr(run_control, "SessionFactory", run_control_session_factory)
+    from mafia.services import activity
+
+    monkeypatch.setattr(activity, "SessionFactory", run_control_session_factory)
+    async with run_control_session_factory() as session:
+        run = await get_run(session, "run-1")
+        run.state = RunState.GENERATING_PLAN
+        stale = datetime.now(UTC) - timedelta(hours=1)
+        session.add(
+            Operation(
+                idempotency_key="run-1:-:model.plan_generation:stalled",
+                run_id="run-1",
+                operation_type="model.plan_generation",
+                request_hash="a" * 64,
+                status="running",
+                attempt=1,
+                heartbeat_at=stale,
+                progress_at=stale,
+                detail={},
+            )
+        )
+        await session.commit()
+
+    launched: list[Callable[[], Awaitable[None]]] = []
+
+    def launch(_id: str, work: Callable[[], Awaitable[None]]) -> None:
+        launched.append(work)
+
+    monkeypatch.setattr(run_control, "launch_background_work", launch)
+    result = await run_control.retry_run("run-1")
+
+    async with run_control_session_factory() as session:
+        recovered = await get_run(session, "run-1")
+        operation = await session.scalar(select(Operation).where(Operation.run_id == "run-1"))
+    assert result.state == RunState.FAILED
+    assert recovered.state == RunState.FAILED
+    assert operation is not None and operation.status == "cancelled"
+    assert len(launched) == 1

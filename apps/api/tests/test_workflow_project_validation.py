@@ -1,3 +1,4 @@
+import asyncio
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from unittest.mock import AsyncMock
 
@@ -6,7 +7,7 @@ from mafia.db.base import Base
 from mafia.db.models import Decision, PendingAction, Phase, Repository, Run
 from mafia.domain.enums import DecisionType, PendingActionKind, PhaseState, RequirementType, RunState
 from mafia.domain.schemas import DecisionSubmission
-from mafia.services import activity, run_control
+from mafia.services import activity, operations, run_control
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -104,9 +105,7 @@ async def test_check_again_replaces_only_the_matching_configuration_action(
         action = await session.scalar(select(PendingAction).where(PendingAction.run_id == run.id))
     assert action is not None
 
-    await run_control.submit_decision(
-        run.id, action.id, DecisionSubmission(action="check_again")
-    )
+    await run_control.submit_decision(run.id, action.id, DecisionSubmission(action="check_again"))
 
     async with factory() as session:
         replacement = await session.scalar(select(PendingAction).where(PendingAction.run_id == run.id))
@@ -117,6 +116,27 @@ async def test_check_again_replaces_only_the_matching_configuration_action(
 
 
 @pytest.mark.asyncio
+async def test_configuration_required_cancel_consumes_action_and_cancels_run(
+    phase_action_session_factory: tuple[async_sessionmaker[AsyncSession], Run, Phase],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, run, phase = phase_action_session_factory
+    monkeypatch.setattr(run_control, "source_validation_status", AsyncMock(return_value=(False, "missing")))
+    await run_control.create_phase_pending_action(run.id, phase.id)
+    async with factory() as session:
+        action = await session.scalar(select(PendingAction).where(PendingAction.run_id == run.id))
+    assert action is not None
+
+    await run_control.submit_decision(run.id, action.id, DecisionSubmission(action="cancel"))
+
+    async with factory() as session:
+        cancelled = await session.get(Run, run.id)
+        decision = await session.scalar(select(Decision).where(Decision.run_id == run.id))
+    assert cancelled is not None and cancelled.state == RunState.CANCELLED
+    assert decision is not None and decision.decision_type == DecisionType.CANCEL
+
+
+@pytest.mark.asyncio
 async def test_start_phase_records_decision_and_consumes_pending_action(
     phase_action_session_factory: tuple[async_sessionmaker[AsyncSession], Run, Phase],
     monkeypatch: pytest.MonkeyPatch,
@@ -124,6 +144,7 @@ async def test_start_phase_records_decision_and_consumes_pending_action(
     factory, run, phase = phase_action_session_factory
     monkeypatch.setattr(run_control, "source_validation_status", AsyncMock(return_value=(True, "repository")))
     launched: list[str] = []
+
     def launch(run_id: str, work: Callable[[], Awaitable[None]]) -> None:
         del work
         launched.append(run_id)
@@ -143,3 +164,34 @@ async def test_start_phase_records_decision_and_consumes_pending_action(
     assert decision is not None
     assert decision.decision_type == DecisionType.START_PHASE
     assert launched == [run.id]
+
+
+@pytest.mark.asyncio
+async def test_phase_start_with_active_work_has_no_side_effects(
+    phase_action_session_factory: tuple[async_sessionmaker[AsyncSession], Run, Phase],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory, run, phase = phase_action_session_factory
+    monkeypatch.setattr(run_control, "source_validation_status", AsyncMock(return_value=(True, "repository")))
+    await run_control.create_phase_pending_action(run.id, phase.id)
+    async with factory() as session:
+        action = await session.scalar(select(PendingAction).where(PendingAction.run_id == run.id))
+    assert action is not None
+
+    release = asyncio.Event()
+
+    async def producer() -> None:
+        await release.wait()
+
+    operations.launch_background_work(run.id, producer)
+    with pytest.raises(operations.ActiveWorkError):
+        await run_control.submit_decision(run.id, action.id, DecisionSubmission(action="start"))
+    async with factory() as session:
+        unchanged = await session.get(Run, run.id)
+        persisted_action = await session.get(PendingAction, action.id)
+        decisions = list(await session.scalars(select(Decision).where(Decision.run_id == run.id)))
+    assert unchanged is not None and unchanged.state == RunState.READY_FOR_PHASE
+    assert persisted_action is not None
+    assert decisions == []
+    release.set()
+    await asyncio.sleep(0)

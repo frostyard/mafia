@@ -13,7 +13,7 @@ from mafia.domain.schemas import RunActivity
 from mafia.services import activity as activity_service
 from mafia.services import run_control
 from mafia.services.auth_middleware import AuthenticationMiddleware
-from mafia.services.operations import has_active_work
+from mafia.services.operations import ActiveWorkError, has_active_work
 from mafia.services.run_control import RunControlError
 from mafia.services.runs import ConcurrentUpdateError, RunNotFoundError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -154,7 +154,10 @@ async def test_run_control_commands_preserve_not_found_envelope(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("error", [ConcurrentUpdateError("changed"), RunControlError("invalid")])
+@pytest.mark.parametrize(
+    "error",
+    [ActiveWorkError("already active"), ConcurrentUpdateError("changed"), RunControlError("invalid")],
+)
 @pytest.mark.parametrize(
     "path,payload",
     [
@@ -248,6 +251,47 @@ async def test_activity_uses_persisted_configuration_action_for_decision_status(
     assert result.status_message == "Configure validation before starting this phase."
     assert result.pending_action is not None
     assert result.pending_action.kind == PendingActionKind.CONFIGURATION_REQUIRED
+
+
+@pytest.mark.asyncio
+async def test_activity_uses_pending_action_prompt_for_decision_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with session_factory() as session:
+            repository = Repository(owner="octo", name="repo", remote_url="https://github.com/octo/repo.git")
+            session.add(repository)
+            await session.flush()
+            run = Run(
+                repository_id=repository.id,
+                requirement_type=RequirementType.TEXT,
+                requirement_text="Test pending action prompt",
+                primary_model="gpt-5.6-sol",
+                reviewer_model="claude-opus-4.8",
+                state=RunState.READY_FOR_PHASE,
+            )
+            session.add(run)
+            await session.flush()
+            session.add(
+                PendingAction(
+                    run_id=run.id,
+                    kind=PendingActionKind.PHASE,
+                    expected_run_version=run.version,
+                    payload={"prompt": "Start phase 1: Implementation."},
+                )
+            )
+            await session.commit()
+        monkeypatch.setattr(activity_service, "SessionFactory", session_factory)
+        result = await activity_service.get_run_activity(run.id)
+    finally:
+        await engine.dispose()
+
+    assert result.status_mode == "decision"
+    assert result.status_message == "Start phase 1: Implementation."
 
 
 @pytest.mark.asyncio
