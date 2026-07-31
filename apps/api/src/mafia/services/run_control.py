@@ -241,9 +241,11 @@ async def _review_pull_request(run_id: str) -> None:
             detail={"reason": "pull_request_review", "pull_request_number": run.pull_request_number},
         ) as operation:
             snapshot, context = await capture_pull_request_snapshot(session, run, run.repository)
+            snapshot_id = snapshot.id
+            snapshot_sha = snapshot.git_sha
             operation.set_result(
                 {
-                    "source_sha": snapshot.git_sha,
+                    "source_sha": snapshot_sha,
                     "base_sha": context.get("base_sha"),
                     "changed_files": context.get("changed_files"),
                 }
@@ -254,10 +256,14 @@ async def _review_pull_request(run_id: str) -> None:
         "pull_request_review.started",
         {
             "pull_request_number": run.pull_request_number,
-            "head_sha": snapshot.git_sha,
+            "head_sha": snapshot_sha,
             "models": [run.primary_model, run.reviewer_model],
         },
     )
+    async with SessionFactory() as session:
+        snapshot = await session.get(SourceSnapshot, snapshot_id)
+        if snapshot is None:
+            raise RunControlError("Pull-request source snapshot is missing")
     service = PullRequestReviewService()
     reviews = await asyncio.gather(
         service.review(run, snapshot, context, model=run.primary_model),
@@ -577,6 +583,7 @@ async def submit_decision(
     phase_id: str | None = None
     start_phase = False
     resolved_phase_action: PendingActionSpec | None = None
+    post_review: tuple[RepositoryIdentity, int, str, str, str] | None = None
     async with SessionFactory() as session:
         run = await get_run(session, run_id)
         action = await session.get(PendingAction, pending_action_id)
@@ -587,7 +594,7 @@ async def submit_decision(
             phase_id, start_phase = await _submit_phase_decision(session, run, action, payload)
             await session.commit()
         elif action is not None and action.kind == PendingActionKind.PULL_REQUEST_REVIEW:
-            await _submit_pull_request_review_decision(session, run, action, payload)
+            post_review = await _submit_pull_request_review_decision(session, run, action, payload)
             await session.commit()
         else:
             expected_kind, active_revision = _validate_artifact_action(
@@ -681,6 +688,18 @@ async def submit_decision(
             run_id,
             lambda: _run_guarded(run_id, "phase", lambda: execute_phase(run_id, phase_id)),
         )
+    elif post_review is not None:
+        identity, pull_request_number, artifact_id, markdown, post_run_id = post_review
+        launch_background_work(
+            post_run_id,
+            lambda: _run_guarded(
+                post_run_id,
+                "pull_request_review_post",
+                lambda: _post_pull_request_review(
+                    post_run_id, identity, pull_request_number, artifact_id, markdown
+                ),
+            ),
+        )
     from mafia.services.activity import get_run_activity
 
     return await get_run_activity(run_id)
@@ -691,7 +710,7 @@ async def _submit_pull_request_review_decision(
     run: Run,
     action: PendingAction,
     payload: DecisionSubmission,
-) -> None:
+) -> tuple[RepositoryIdentity, int, str, str, str] | None:
     pull_request_number = action.payload.get("pull_request_number")
     artifact = await session.get(Artifact, action.artifact_id) if action.artifact_id else None
     if (
@@ -742,30 +761,43 @@ async def _submit_pull_request_review_decision(
         )
     )
     if payload.action != "post":
-        return
-    identity = RepositoryIdentity(run.repository.owner, run.repository.name)
-    markdown = artifact.rendered_markdown
-    await session.commit()
-    try:
-        async with tracked_operation(
-            run_id=run.id,
-            operation_type="github.pull_request_comment",
-            operation_key=artifact.id,
-            detail={
-                "repository": identity.slug,
-                "pull_request_number": pull_request_number,
-                "artifact_id": artifact.id,
-            },
-        ) as operation:
-            url = await post_pull_request_comment(
-                identity, pull_request_number, run_id=run.id, artifact_id=artifact.id, markdown=markdown
-            )
-            operation.set_result({"comment_url": url})
-    except Exception:
-        # The consumed decision is durable; retry rebuilds it from the consolidated artifact.
-        raise
+        return None
+    return (
+        RepositoryIdentity(run.repository.owner, run.repository.name),
+        pull_request_number,
+        artifact.id,
+        artifact.rendered_markdown,
+        run.id,
+    )
+
+
+async def _post_pull_request_review(
+    run_id: str,
+    identity: RepositoryIdentity,
+    pull_request_number: int,
+    artifact_id: str,
+    markdown: str,
+) -> None:
+    async with tracked_operation(
+        run_id=run_id,
+        operation_type="github.pull_request_comment",
+        operation_key=artifact_id,
+        detail={
+            "repository": identity.slug,
+            "pull_request_number": pull_request_number,
+            "artifact_id": artifact_id,
+        },
+    ) as operation:
+        url = await post_pull_request_comment(
+            identity,
+            pull_request_number,
+            run_id=run_id,
+            artifact_id=artifact_id,
+            markdown=markdown,
+        )
+        operation.set_result({"comment_url": url})
     async with SessionFactory() as final_session:
-        current_run = await get_run(final_session, run.id)
+        current_run = await get_run(final_session, run_id)
         await transition_run(
             final_session,
             current_run.id,
