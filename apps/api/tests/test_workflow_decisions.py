@@ -10,6 +10,7 @@ from mafia.db.models import (
     Artifact,
     AuditEvent,
     Decision,
+    Operation,
     PendingAction,
     Phase,
     Repository,
@@ -32,7 +33,7 @@ from mafia.domain.enums import (
     WorkflowType,
 )
 from mafia.domain.schemas import DecisionSubmission
-from mafia.services import operations, run_control
+from mafia.services import lifecycle, operations, run_control
 from mafia.services.artifacts import persist_artifact
 from mafia.services.runs import get_run
 from sqlalchemy import select
@@ -1381,3 +1382,148 @@ async def test_failed_run_without_durable_work_generates_specification(
     monkeypatch.setattr(run_control, "_generate_specification", generation)
     await run_control.advance_run(run.id)
     generation.assert_awaited_once_with(run.id)
+
+
+@pytest.mark.asyncio
+async def test_failed_phase_recovers_pull_request_before_phase_execution(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.FAILED)
+        phase = Phase(
+            run_id=run.id,
+            ordinal=1,
+            title="Recover pull request",
+            objective="Resume an interrupted pull request",
+            dependencies=[],
+            details={},
+            status=PhaseState.FAILED,
+            plan_revision=1,
+            source_sha="a" * 40,
+            branch_name="mafia/run/recover-pr",
+            commit_sha="b" * 40,
+        )
+        session.add(phase)
+        await session.commit()
+        phase_id = phase.id
+
+    order: list[str] = []
+
+    async def recover(run_id: str, recovered_phase_id: str) -> bool:
+        order.append("recover")
+        assert run_id == run.id
+        assert recovered_phase_id == phase_id
+        async with session_factory() as session:
+            recovered_run = await session.get(Run, run_id)
+            recovered_phase = await session.get(Phase, recovered_phase_id)
+            assert recovered_run is not None and recovered_phase is not None
+            recovered_phase.status = PhaseState.WAITING_FOR_MERGE
+            recovered_run.state = RunState.WAITING_FOR_MERGE
+            await session.commit()
+        return True
+
+    recovery = AsyncMock(side_effect=recover)
+    execution = AsyncMock()
+    monkeypatch.setattr(lifecycle, "recover_phase_pull_request", recovery)
+    monkeypatch.setitem(
+        __import__("sys").modules, "mafia.services.execution", type("M", (), {"execute_phase": execution})
+    )
+
+    await run_control.advance_run(run.id)
+
+    async with session_factory() as session:
+        recovered_run = await get_run(session, run.id)
+        recovered_phase = await session.get(Phase, phase_id)
+    assert order == ["recover"]
+    recovery.assert_awaited_once_with(run.id, phase_id)
+    execution.assert_not_awaited()
+    assert recovered_run.state == RunState.WAITING_FOR_MERGE
+    assert recovered_phase is not None
+    assert recovered_phase.status == PhaseState.WAITING_FOR_MERGE
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_fails_work_without_external_recovery(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    states = [
+        RunState.GENERATING_SPEC,
+        RunState.REGROUNDING,
+        RunState.EXECUTING_PHASE,
+        RunState.POSTING_PR_REVIEW,
+    ]
+    async with session_factory() as session:
+        first_run = await add_run(session, state=states[0])
+        runs = [first_run]
+        for state in states[1:]:
+            run = Run(
+                repository_id=first_run.repository_id,
+                requirement_type=RequirementType.TEXT,
+                requirement_text="Recover safely after a restart",
+                primary_model="gpt-5.6-sol",
+                reviewer_model="claude-opus-4.8",
+                state=state,
+            )
+            session.add(run)
+            await session.flush()
+            runs.append(run)
+        execution_phase = Phase(
+            run_id=runs[2].id,
+            ordinal=1,
+            title="Interrupted phase",
+            objective="Fail safely at startup",
+            dependencies=[],
+            details={},
+            status=PhaseState.EXECUTING,
+            plan_revision=1,
+            source_sha="a" * 40,
+            branch_name="mafia/run/interrupted",
+        )
+        session.add(execution_phase)
+        for index, run in enumerate(runs):
+            session.add(
+                Operation(
+                    idempotency_key=f"{run.id}:-:model.test:interrupted-{index}",
+                    run_id=run.id,
+                    operation_type="model.test",
+                    request_hash="b" * 64,
+                    status="running",
+                    model=run.primary_model,
+                    attempt=1,
+                    timeout_seconds=900,
+                    detail={},
+                )
+            )
+        await session.commit()
+        run_ids = [run.id for run in runs]
+
+    launch = AsyncMock()
+    recovery = AsyncMock()
+    pull_request_lookup = AsyncMock()
+    monkeypatch.setattr(lifecycle, "SessionFactory", session_factory)
+    monkeypatch.setattr(lifecycle, "launch_background_work", launch)
+    monkeypatch.setattr(lifecycle, "recover_phase_pull_request", recovery)
+    monkeypatch.setattr(lifecycle, "pull_request_for_branch", pull_request_lookup)
+
+    await lifecycle.recover_interrupted_runs()
+
+    async with session_factory() as session:
+        recovered_runs = [await get_run(session, run_id) for run_id in run_ids]
+        operations_by_run = {
+            run_id: await session.scalar(select(Operation).where(Operation.run_id == run_id))
+            for run_id in run_ids
+        }
+        pending_actions = list(
+            await session.scalars(select(PendingAction).where(PendingAction.run_id.in_(run_ids)))
+        )
+        failed_phase = await session.get(Phase, execution_phase.id)
+    assert [run.state for run in recovered_runs] == [RunState.FAILED] * len(states)
+    assert [operation.status for operation in operations_by_run.values() if operation is not None] == [
+        "failed"
+    ] * len(states)
+    assert recovered_runs[-1].failure_code == "pull_request_review_post_failed"
+    assert pending_actions == []
+    assert failed_phase is not None and failed_phase.status == PhaseState.FAILED
+    launch.assert_not_called()
+    recovery.assert_not_awaited()
+    pull_request_lookup.assert_not_awaited()
