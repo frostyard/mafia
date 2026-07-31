@@ -1,7 +1,7 @@
-from mafia.config import get_settings
 from dataclasses import dataclass, field
 from typing import Any
 
+from mafia.config import get_settings
 from mafia.db.models import AuditEvent, PendingAction, Repository, Run
 from mafia.domain.enums import PendingActionKind, RequirementType, RunState, WorkflowType
 from mafia.domain.schemas import RunCreate

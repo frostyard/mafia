@@ -10,7 +10,6 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-
 revision: str = "e4c2a81f0d31"
 down_revision: str | Sequence[str] | None = "b8a1c7d4e2f0"
 branch_labels: str | Sequence[str] | None = None
@@ -45,7 +44,6 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["phase_id"], ["phases.id"], ondelete="CASCADE"),
         sa.ForeignKeyConstraint(["run_id"], ["runs.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("run_id"),
     )
     op.create_index(op.f("ix_pending_actions_run_id"), "pending_actions", ["run_id"], unique=True)
     with op.batch_alter_table("runs") as batch_op:
