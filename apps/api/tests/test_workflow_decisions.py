@@ -1326,3 +1326,58 @@ async def test_failed_run_with_accepted_specification_resumes_planning(
     monkeypatch.setattr(run_control, "_generate_plan", planning)
     await run_control.advance_run(run.id)
     planning.assert_awaited_once_with(run.id, feedback="Retry after an interrupted planning step.")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "revision", "state", "action_kind"),
+    [
+        (ArtifactKind.SPECIFICATION, 1, RunState.AWAITING_SPEC_DECISION, PendingActionKind.SPECIFICATION),
+        (ArtifactKind.PLAN, 1, RunState.AWAITING_PLAN_DECISION, PendingActionKind.PLAN),
+    ],
+)
+async def test_failed_run_restores_durable_artifact_action(
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    kind: ArtifactKind,
+    revision: int,
+    state: RunState,
+    action_kind: PendingActionKind,
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.FAILED)
+        if kind == ArtifactKind.SPECIFICATION:
+            run.active_spec_revision = revision
+        else:
+            run.active_plan_revision = revision
+        session.add(
+            Artifact(
+                run_id=run.id,
+                kind=kind,
+                revision=revision,
+                structured_data={},
+                rendered_markdown="# Artifact",
+                model=run.primary_model,
+            )
+        )
+        await session.commit()
+    monkeypatch.setattr(run_control, "_generate_specification", AsyncMock())
+    monkeypatch.setattr(run_control, "_generate_plan", AsyncMock())
+    await run_control.advance_run(run.id)
+    async with session_factory() as session:
+        restored = await get_run(session, run.id)
+    assert restored.state == state
+    assert restored.pending_action is not None and restored.pending_action.kind == action_kind
+
+
+@pytest.mark.asyncio
+async def test_failed_run_without_durable_work_generates_specification(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.FAILED)
+        await session.commit()
+    generation = AsyncMock()
+    monkeypatch.setattr(run_control, "_generate_specification", generation)
+    await run_control.advance_run(run.id)
+    generation.assert_awaited_once_with(run.id)
