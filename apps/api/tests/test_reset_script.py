@@ -80,3 +80,35 @@ def test_reset_recreates_only_the_requested_runtime_directory(tmp_path: Path) ->
     assert not stale_file.exists()
     assert sibling.read_text() == "preserve me"
     assert stat.S_IMODE(data_dir.stat().st_mode) == 0o750
+
+
+def test_reset_removes_read_only_module_cache_without_following_descendant_symlinks(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "runtime"
+    module_cache = data_dir / "module-cache" / "golang.org" / "dl@v0.0.0-test"
+    module_cache.mkdir(parents=True)
+    cached_file = module_cache / "go.mod"
+    cached_file.write_text("module golang.org/dl\n")
+    protected = tmp_path / "protected"
+    protected.mkdir()
+    marker = protected / "marker"
+    marker.write_text("do not touch")
+    (module_cache / "outside").symlink_to(protected, target_is_directory=True)
+    cached_file.chmod(0o444)
+    module_cache.chmod(0o555)
+    protected.chmod(0o555)
+
+    try:
+        result = run_reset("--confirm-destructive-reset", data_dir=str(data_dir))
+
+        assert result.returncode == 0, result.stderr
+        assert data_dir.is_dir()
+        assert stat.S_IMODE(data_dir.stat().st_mode) == 0o750
+        assert not cached_file.exists()
+        assert marker.read_text() == "do not touch"
+        assert stat.S_IMODE(protected.stat().st_mode) == 0o555
+    finally:
+        if module_cache.exists():
+            module_cache.chmod(0o755)
+        protected.chmod(0o755)
