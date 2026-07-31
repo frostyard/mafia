@@ -189,6 +189,9 @@ async def _execute_phase(
                 event_type="source.drift_detected",
                 payload={"expected": phase.source_sha, "actual": current_sha},
             )
+        from mafia.services.run_control import advance_run
+
+        await advance_run(run_id)
         return
 
     lease_token = await acquire_repository_lock(

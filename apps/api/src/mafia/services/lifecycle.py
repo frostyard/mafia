@@ -11,11 +11,12 @@ from mafia.db.session import SessionFactory
 from mafia.domain.enums import PhaseState, RunState
 from mafia.services.commands import CommandError, run_command
 from mafia.services.github import get_pr, gh_json
+from mafia.services.operations import launch_background_work
 from mafia.services.repositories import (
     RepositoryIdentity,
     require_repository_owner,
 )
-from mafia.services.run_control import phase_pending_action
+from mafia.services.run_control import resolve_phase_pending_action
 from mafia.services.runs import (
     PendingActionSpec,
     get_run,
@@ -248,6 +249,7 @@ async def _mark_interrupted_run_failed(run_id: str, message: str) -> None:
             RunState.REVIEWING_PLAN,
             RunState.ADJUDICATING_PLAN,
             RunState.PERSISTING_PLAN,
+            RunState.REGROUNDING,
             RunState.EXECUTING_PHASE,
             RunState.REVIEWING_IMPLEMENTATION,
             RunState.ADJUDICATING_IMPLEMENTATION,
@@ -279,6 +281,7 @@ async def recover_interrupted_runs() -> None:
         RunState.REVIEWING_PLAN,
         RunState.ADJUDICATING_PLAN,
         RunState.PERSISTING_PLAN,
+        RunState.REGROUNDING,
         RunState.EXECUTING_PHASE,
         RunState.REVIEWING_IMPLEMENTATION,
         RunState.ADJUDICATING_IMPLEMENTATION,
@@ -432,8 +435,6 @@ async def _reconcile_run(run_id: str) -> dict[str, Any]:
         phase = await session.get(Phase, phase_id)
         if phase is None:
             raise ReconciliationError("Active phase disappeared during reconciliation")
-        phase.status = PhaseState.MERGED
-        phase.merge_sha = merge_sha
         remaining = list(
             await session.scalars(
                 select(Phase)
@@ -443,21 +444,29 @@ async def _reconcile_run(run_id: str) -> dict[str, Any]:
         )
         material_drift = bool(external_changes) and _touches_planned_files(external_changes, remaining)
         pending_action = None
+        next_phase: Phase | None = None
         if material_drift:
             next_state = RunState.REGROUNDING
             event_type = "source.material_drift_detected"
         elif remaining:
             next_phase = remaining[0]
-            next_phase.status = PhaseState.READY
-            next_phase.source_sha = default_sha
             next_state = RunState.READY_FOR_PHASE
             event_type = "phase.ready"
-            pending_action = await phase_pending_action(
-                run, next_phase, expected_run_version=run.version + 1
+            pending_action = await resolve_phase_pending_action(
+                run,
+                phase_id=next_phase.id,
+                source_sha=default_sha,
+                ordinal=next_phase.ordinal,
+                title=next_phase.title,
             )
         else:
             next_state = RunState.COMPLETED
             event_type = "run.completed"
+        phase.status = PhaseState.MERGED
+        phase.merge_sha = merge_sha
+        if next_phase is not None:
+            next_phase.status = PhaseState.READY
+            next_phase.source_sha = default_sha
         transition_payload: dict[str, object] = {
             "merged_phase_id": phase.id,
             "merge_sha": merge_sha,
@@ -494,12 +503,25 @@ async def _reconcile_run(run_id: str) -> dict[str, Any]:
 
     if worktree_path and cache_path:
         await workspaces.remove_worktree(Path(cache_path), Path(worktree_path))
+    if material_drift:
+        launch_background_work(run_id, lambda: _advance_regrounding(run_id))
     return {
         "changed": True,
         "state": run.state.value,
         "merge_sha": merge_sha,
         "material_drift": material_drift,
     }
+
+
+async def _advance_regrounding(run_id: str) -> None:
+    from mafia.services.run_control import advance_run, record_run_failure
+
+    try:
+        await advance_run(run_id)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:
+        await record_run_failure(run_id, "planning", error)
 
 
 async def monitor_merges(stop: asyncio.Event, poll_seconds: float) -> None:

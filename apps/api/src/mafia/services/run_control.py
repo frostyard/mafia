@@ -350,6 +350,7 @@ async def submit_decision(
     launch_stage: str | None = None
     phase_id: str | None = None
     start_phase = False
+    resolved_phase_action: PendingActionSpec | None = None
     async with SessionFactory() as session:
         run = await get_run(session, run_id)
         action = await session.get(PendingAction, pending_action_id)
@@ -392,6 +393,7 @@ async def submit_decision(
                 launch = (run.id, payload.feedback if payload.action == "refine" else None)
                 launch_stage = "specification" if payload.action == "refine" else "planning"
             else:
+                resolved_phase_action = await _resolve_plan_phase_action(session, run, artifact, payload)
                 target, event_type, launch = await _accept_plan(session, run, artifact, payload)
                 launch_stage = "planning"
 
@@ -423,7 +425,19 @@ async def submit_decision(
                 if phase is None:
                     raise RunControlError("Accepted plan has no ready phase")
                 phase_id = phase.id
-                session.add(await phase_pending_action(run, phase, expected_run_version=run.version + 1))
+                if resolved_phase_action is None:
+                    raise RunControlError("Accepted plan has no resolved ready phase action")
+                session.add(
+                    _pending_action(
+                        run.id,
+                        PendingActionSpec(
+                            kind=resolved_phase_action.kind,
+                            phase_id=phase.id,
+                            payload=resolved_phase_action.payload,
+                        ),
+                        expected_run_version=run.version + 1,
+                    )
+                )
             await session.commit()
 
     if launch is not None:
@@ -495,6 +509,46 @@ def _validate_artifact_action(
     if payload.action not in {"accept", "refine", "cancel"}:
         raise RunControlError("Action is not valid for an artifact decision")
     return expected_kind, active_revision
+
+
+async def _resolve_plan_phase_action(
+    session: AsyncSession,
+    run: Run,
+    artifact: Artifact,
+    payload: DecisionSubmission,
+) -> PendingActionSpec | None:
+    if payload.action == "refine":
+        return None
+    plan = ImplementationPlan.model_validate(artifact.structured_data)
+    snapshot = await session.get(SourceSnapshot, artifact.source_snapshot_id)
+    if snapshot is None:
+        raise RunControlError("Plan source snapshot is missing")
+    existing_phases = list(await session.scalars(select(Phase).where(Phase.run_id == run.id)))
+    protected = {
+        phase.ordinal: phase
+        for phase in existing_phases
+        if phase.status in {PhaseState.MERGED, PhaseState.WAITING_FOR_MERGE}
+    }
+    if any(phase.status == PhaseState.WAITING_FOR_MERGE for phase in protected.values()):
+        return None
+    merged = {ordinal for ordinal, phase in protected.items() if phase.status == PhaseState.MERGED}
+    ready = next(
+        (
+            item
+            for item in sorted(plan.phases, key=lambda item: item.ordinal)
+            if item.ordinal not in protected and set(item.dependencies).issubset(merged)
+        ),
+        None,
+    )
+    if ready is None:
+        return None
+    return await resolve_phase_pending_action(
+        run,
+        phase_id=None,
+        source_sha=snapshot.git_sha,
+        ordinal=ready.ordinal,
+        title=ready.title,
+    )
 
 
 async def _accept_plan(
@@ -570,37 +624,47 @@ async def _accept_plan(
     return RunState.READY_FOR_PHASE, "plan.accepted", None
 
 
-async def phase_pending_action(
+async def resolve_phase_pending_action(
     run: Run,
-    phase: Phase,
     *,
-    expected_run_version: int,
-) -> PendingAction:
+    phase_id: str | None,
+    source_sha: str,
+    ordinal: int,
+    title: str,
+) -> PendingActionSpec:
     identity = RepositoryIdentity(run.repository.owner, run.repository.name)
     validation_available, _ = await source_validation_status(
-        identity, run.repository.cache_path, phase.source_sha
+        identity, run.repository.cache_path, source_sha
     )
     if validation_available:
-        return PendingAction(
-            run_id=run.id,
+        return PendingActionSpec(
             kind=PendingActionKind.PHASE,
-            phase_id=phase.id,
-            expected_run_version=expected_run_version,
-            payload={"prompt": f"Start phase {phase.ordinal}: {phase.title}."},
+            phase_id=phase_id,
+            payload={"prompt": f"Start phase {ordinal}: {title}."},
         )
-    return PendingAction(
-        run_id=run.id,
+    return PendingActionSpec(
         kind=PendingActionKind.CONFIGURATION_REQUIRED,
-        phase_id=phase.id,
-        expected_run_version=expected_run_version,
+        phase_id=phase_id,
         payload={
             "message": (
-                f"Phase {phase.ordinal} cannot start until deterministic validation is configured "
+                f"Phase {ordinal} cannot start until deterministic validation is configured "
                 f"for {identity.slug}."
             ),
             "project_id": run.repository_id,
             "project_href": f"/projects/{run.repository_id}",
         },
+    )
+
+
+def _pending_action(
+    run_id: str, spec: PendingActionSpec, *, expected_run_version: int
+) -> PendingAction:
+    return PendingAction(
+        run_id=run_id,
+        kind=spec.kind,
+        phase_id=spec.phase_id,
+        expected_run_version=expected_run_version,
+        payload=spec.payload,
     )
 
 
@@ -615,8 +679,15 @@ async def create_phase_pending_action(run_id: str, phase_id: str) -> None:
             or phase.status != PhaseState.READY
         ):
             raise RunControlError("Phase is not ready for an action")
+        pending = await resolve_phase_pending_action(
+            run,
+            phase_id=phase.id,
+            source_sha=phase.source_sha,
+            ordinal=phase.ordinal,
+            title=phase.title,
+        )
         await session.execute(delete(PendingAction).where(PendingAction.run_id == run.id))
-        session.add(await phase_pending_action(run, phase, expected_run_version=run.version))
+        session.add(_pending_action(run.id, pending, expected_run_version=run.version))
         await session.commit()
 
 
@@ -638,9 +709,16 @@ async def _submit_phase_decision(
         raise RunControlError("Pending phase action is stale")
     if action.kind == PendingActionKind.CONFIGURATION_REQUIRED:
         if payload.action == "check_again":
+            pending = await resolve_phase_pending_action(
+                run,
+                phase_id=phase.id,
+                source_sha=phase.source_sha,
+                ordinal=phase.ordinal,
+                title=phase.title,
+            )
             await session.delete(action)
             await session.flush()
-            session.add(await phase_pending_action(run, phase, expected_run_version=run.version))
+            session.add(_pending_action(run.id, pending, expected_run_version=run.version))
             return phase.id, False
         if payload.action != "cancel":
             raise RunControlError("Configuration action requires Check again or Cancel")

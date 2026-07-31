@@ -1,11 +1,12 @@
 import subprocess
+from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from mafia.domain.enums import PhaseState, RunState
-from mafia.services import execution
+from mafia.services import execution, run_control
 from mafia.services.execution import PhaseExecutionError, PhaseNotReadyError, validate_worktree_diff
 
 
@@ -58,3 +59,52 @@ async def test_execute_phase_raises_typed_error_when_phase_is_not_ready(
         await execution._execute_phase(  # pyright: ignore[reportPrivateUsage]
             "run-1", "phase-1"
         )
+
+
+@pytest.mark.asyncio
+async def test_source_drift_advances_regrounding_inside_active_phase_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = SimpleNamespace(
+        id="run-1",
+        repository_id="repository-1",
+        repository=SimpleNamespace(owner="octo", name="repo"),
+        state=RunState.READY_FOR_PHASE,
+        version=1,
+    )
+    phase = SimpleNamespace(
+        id="phase-1",
+        ordinal=1,
+        status=PhaseState.READY,
+        source_sha="a" * 40,
+    )
+
+    class Session:
+        async def __aenter__(self) -> object:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    @asynccontextmanager
+    async def operation(*args: object, **kwargs: object):
+        del args, kwargs
+        yield SimpleNamespace(set_result=lambda result: None)  # type: ignore[reportUnknownLambdaType]
+
+    workspace = SimpleNamespace(
+        refresh=AsyncMock(return_value=(SimpleNamespace(default_branch="main"), "/cache", "b" * 40))
+    )
+    transition = AsyncMock()
+    advance = AsyncMock()
+    monkeypatch.setattr(execution, "_phase_with_run", AsyncMock(return_value=(run, phase)))
+    monkeypatch.setattr(execution, "WorkspaceService", lambda: workspace)
+    monkeypatch.setattr(execution, "tracked_operation", operation)
+    monkeypatch.setattr(execution, "SessionFactory", lambda: Session())
+    monkeypatch.setattr(execution, "get_run", AsyncMock(return_value=run))
+    monkeypatch.setattr(execution, "transition_run", transition)
+    monkeypatch.setattr(run_control, "advance_run", advance)
+
+    await execution.execute_phase(run.id, phase.id)
+
+    transition.assert_awaited_once()
+    advance.assert_awaited_once_with(run.id)

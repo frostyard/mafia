@@ -706,6 +706,60 @@ async def test_plan_accept_marks_ready_phase(
 
 
 @pytest.mark.asyncio
+async def test_plan_accept_resolves_validation_before_the_versioned_write(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async with session_factory() as session:
+        run = await add_run(session, state=RunState.AWAITING_PLAN_DECISION)
+        snapshot = await add_snapshot(session, run, "plan-r1")
+        artifact = Artifact(
+            run_id=run.id,
+            source_snapshot_id=snapshot.id,
+            kind=ArtifactKind.PLAN,
+            revision=1,
+            structured_data=plan(snapshot.git_sha).model_dump(mode="json"),
+            rendered_markdown="# Plan",
+            model=run.primary_model,
+        )
+        session.add(artifact)
+        await session.flush()
+        run.active_plan_revision = artifact.revision
+        run.pending_action = PendingAction(
+            kind=PendingActionKind.PLAN,
+            artifact_id=artifact.id,
+            revision=artifact.revision,
+            expected_run_version=run.version,
+            payload={},
+        )
+        await session.commit()
+        action_id = pending_action_id(run)
+
+    order: list[str] = []
+
+    async def resolved_validation(*args: object) -> tuple[bool, str]:
+        del args
+        order.append("resolved")
+        return True, "repository"
+
+    monkeypatch.setattr(
+        run_control,
+        "source_validation_status",
+        AsyncMock(side_effect=resolved_validation),
+    )
+    original_transition = run_control._transition_without_commit  # pyright: ignore[reportPrivateUsage]
+
+    async def record_transition(*args: object, **kwargs: object) -> tuple[Run, RunState]:
+        order.append("transition")
+        return await original_transition(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(run_control, "_transition_without_commit", record_transition)
+
+    await run_control.submit_decision(run.id, action_id, DecisionSubmission(action="accept"))
+
+    assert order.index("resolved") < order.index("transition")
+
+
+@pytest.mark.asyncio
 async def test_plan_accept_completes_when_all_phases_are_already_merged(
     session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
 ) -> None:
